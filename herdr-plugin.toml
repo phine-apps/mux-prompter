@@ -1,0 +1,18 @@
+id = "github.phine-apps.mux-prompter"
+name = "Mux Prompter"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Fuzzy-pick and inject context-aware prompts into active Herdr panes"
+platforms = ["linux", "macos"]
+
+[[panes]]
+id = "picker"
+title = "Prompter UI"
+placement = "overlay"
+command = ["bash", "prompter.sh"]
+
+[[actions]]
+id = "open-picker"
+title = "Open Prompter UI"
+contexts = ["workspace"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "github.phine-apps.mux-prompter", "--entrypoint", "picker"]

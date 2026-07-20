@@ -1,0 +1,6 @@
+.DS_Store
+*.log
+mock_config/
+mock_bin/
+dummy_git_file.txt
+dummy_test_file.txt

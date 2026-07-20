@@ -1,0 +1,24 @@
+name: Test Mux Prompter Plugin
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y jq fzf
+
+      - name: Run test suite
+        run: |
+          cd tests
+          bash test_prompter.sh
