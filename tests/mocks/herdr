@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+if [ -n "$MOCK_LOG_DIR" ]; then
+  echo "herdr $*" >> "$MOCK_LOG_DIR/herdr_calls.log"
+fi
+
+if [ "$1" == "pane" ] && [ "$2" == "read" ]; then
+  echo -e "zsh\n\$ npm run dev\n[INFO] server started on port 3000\n[ERROR] database connection failed"
+  exit 0
+fi
+
+if [ "$1" == "pane" ] && [ "$2" == "list" ]; then
+  echo '{"id":"cli:pane:list","result":{"panes":[{"agent_status":"unknown","cwd":"/Users/oishik","focused":false,"foreground_cwd":"/Users/oishik","pane_id":"w2:p1","revision":0,"tab_id":"w2:t1","terminal_id":"term_1","workspace_id":"w2"},{"agent_status":"unknown","cwd":"/Users/oishik/apps/herdr-prompter","focused":true,"foreground_cwd":"/Users/oishik/apps/herdr-prompter","label":"Prompter UI","pane_id":"w2:p2","revision":0,"tab_id":"w2:t1","terminal_id":"term_2","workspace_id":"w2"},{"agent_status":"unknown","cwd":"/Users/oishik/apps/herdr-prompter","focused":false,"foreground_cwd":"/Users/oishik/apps/herdr-prompter","label":"Other Pane","pane_id":"w2:p3","revision":0,"tab_id":"w2:t1","terminal_id":"term_3","workspace_id":"w2"}]},"type":"pane_list"}'
+  exit 0
+fi
+
+if [ "$1" == "tab" ] && [ "$2" == "list" ]; then
+  echo '{"id":"cli:tab:list","result":{"tabs":[{"label":"Main Tab","number":1,"tab_id":"w2:t1","workspace_id":"w2"}]},"type":"tab_list"}'
+  exit 0
+fi
+
+if [ "$1" == "pane" ] && [ "$2" == "send-text" ]; then
+  # Echo the text to stdout so tests capturing output can assert it
+  # Herdr pane send-text <target_pid> <text>, so text is $4
+  echo "$4"
+  exit 0
+fi
+
+exit 0

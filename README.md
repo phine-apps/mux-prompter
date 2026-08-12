@@ -1,14 +1,16 @@
 # Mux Prompter
 
 <p align="center">
-  <b>Fuzzy-pick and inject context-aware prompts into active Herdr panes.</b>
+  <b>Fuzzy-pick and inject context-aware prompts into active Herdr and tmux panes.</b>
 </p>
 
 ---
 
-**Mux Prompter** is a prompt productivity plugin for terminal multiplexers ([Herdr](https://herdr.dev)). It eliminates the manual work of copying and pasting error logs, git diffs, file contents, and selected code when interacting with AI coding assistants in your terminal.
+**Mux Prompter** is a prompt productivity plugin for terminal multiplexers ([Herdr](https://herdr.dev) and [tmux](https://github.com/tmux/tmux)). It allows you to instantly pick and inject reusable prompt templates into your active terminal pane with a single keyboard shortcut.
 
-By pressing a simple shortcut, a dynamic `fzf` UI pops up, allowing you to pick a prompt template. All context placeholders are **resolved automatically in real time**, and the finalized prompt is injected straight into your active terminal pane.
+Additionally, it can automatically resolve context placeholders—such as error logs, git diffs, file contents, and selected code—eliminating the hassle of manual copy-pasting when interacting with AI coding assistants.
+
+By pressing a simple shortcut, a dynamic `fzf` UI pops up, allowing you to pick a prompt template. All context placeholders (if any) are **resolved automatically in real time**, and the finalized prompt is injected straight into your active terminal pane.
 
 ---
 
@@ -17,14 +19,14 @@ By pressing a simple shortcut, a dynamic `fzf` UI pops up, allowing you to pick 
 ```text
 [ Active Terminal Pane ]
   │
-  ├── 1. Press `prefix + p`  ────────► [ Prompter UI (fzf) ]
-  │                                       ├── Templates> (Default)
-  │                                       ├── History>   (Ctrl-R)
-  │                                       └── All>       (Ctrl-A)
-  │                                              │
-  │                                       Select Template with Live Preview
-  │                                              │
-  └── 2. Instant Injection ◄─────────────────────┘
+  ├── 1. Press shortcut (`prefix + P` / `Alt + p`) ──► [ Prompter UI (fzf) ]
+  │                                                       ├── Templates> (Default)
+  │                                                       ├── History>   (Ctrl-R)
+  │                                                       └── All>       (Ctrl-A)
+  │                                                              │
+  │                                                       Select Template with Live Preview
+  │                                                              │
+  └── 2. Instant Injection ◄─────────────────────────────────────┘
         • Standard: Injected into input buffer for editing
         • Bang (!): Executed immediately (e.g., !Run Tests)
 ```
@@ -33,11 +35,12 @@ By pressing a simple shortcut, a dynamic `fzf` UI pops up, allowing you to pick 
 
 ## ✨ Key Features
 
-- 🔍 **Interactive Fuzzy Picking**: Instantly search templates using `fzf` with a side-by-side live resolved preview.
-- 🤖 **Auto-Context Resolution**: Automatically gathers terminal logs, git diffs, git branch names, active file contents, and error tracebacks.
+- ⚡ **Instant Prompt Launcher**: Quickly pick and insert reusable prompt templates into your terminal buffer.
+- 🔍 **Interactive Fuzzy Picking**: Search templates using `fzf` with a side-by-side live resolved preview.
+- 🤖 **Auto-Context Resolution**: Automatically gathers terminal logs, git diffs, branch names, file contents, and error tracebacks via `{{placeholders}}`.
 - 🎯 **Interactive Inputs**: Interactively prompt for missing variables, choose target panes, or pick files on-the-fly.
 - ⚡ **Immediate Execution (`!`)**: Templates starting with `!` execute immediately in the target pane without hitting Enter.
-- 📜 **Prompt History**: Automatically saves sent prompts so you can re-use or tweak previous prompts easily with `Ctrl-R`.
+- 📜 **Prompt History**: Automatically saves sent prompts so you can re-use previous prompts easily with `Ctrl-R`.
 
 ---
 
@@ -52,24 +55,58 @@ Ensure you have the following CLI tools installed:
 
 ## 🚀 Installation & Setup
 
-### 1. Install Plugin
+### 🟢 Herdr Setup
 
-Install the plugin via Herdr CLI:
+1. Install via Herdr CLI:
+   ```bash
+   herdr plugin install phine-apps/mux-prompter
+   ```
 
-```bash
-herdr plugin install phine-apps/mux-prompter
+2. Add keybinding to `~/.config/herdr/config.toml`:
+   ```toml
+   [[keys.command]]
+   key = "prefix+P"
+   type = "shell"
+   command = "herdr plugin pane open --plugin github.phine-apps.mux-prompter --entrypoint picker"
+   ```
+
+---
+
+### 🔲 tmux Setup & Plugin Distribution
+
+Mux Prompter natively supports **TPM (Tmux Plugin Manager)** for one-line installation and distribution.
+
+#### Option A: Install via TPM (Recommended)
+
+Add to your `~/.tmux.conf`:
+
+```tmux
+set -g @plugin 'phine-apps/mux-prompter'
 ```
 
-### 2. Configure Keybinding (Recommended)
+Then press `prefix` + `I` to fetch and install the plugin automatically!
 
-Add a shortcut key (e.g., `prefix` + `p`) to your Herdr configuration (`~/.config/herdr/config.toml`):
-
-```toml
-[[keys.command]]
-key = "prefix+p"
-type = "shell"
-command = "herdr plugin pane open --plugin github.phine-apps.mux-prompter --entrypoint picker"
+*(Optional TPM Customizations in `~/.tmux.conf`)*:
+```tmux
+set -g @prompter-key 'P'       # Custom shortcut key (default: P)
+set -g @prompter-width '80%'   # Custom popup width (default: 80%)
+set -g @prompter-height '60%'  # Custom popup height (default: 60%)
 ```
+
+---
+
+#### Option B: Manual Installation
+
+1. **Clone Repository**:
+   ```bash
+   git clone https://github.com/phine-apps/mux-prompter.git ~/apps/mux-prompter
+   ```
+
+2. **Add Keybinding to `~/.tmux.conf`**:
+   ```tmux
+   # Bind prefix + P (Shift+P) to open Mux Prompter in a popup window
+   bind-key P display-popup -E -w 80% -h 60% "~/apps/mux-prompter/prompter.sh"
+   ```
 
 ---
 
@@ -77,7 +114,7 @@ command = "herdr plugin pane open --plugin github.phine-apps.mux-prompter --entr
 
 ### Step 1: Open Prompter UI
 
-Press your configured shortcut key (`prefix` + `p`). The `fzf` UI overlay will appear at the top.
+Press your configured shortcut key (`prefix` + `P` in tmux, or shell shortcut). The `fzf` UI overlay will appear at the top.
 
 ### Step 2: Switch Views (Optional)
 
@@ -171,20 +208,45 @@ When selecting a template containing `{{var:branch}}`, an `fzf` menu will automa
 ## 📝 Example `templates.txt`
 
 ````text
-Fix Terminal Error|I ran `{{last_command}}` and encountered this error:\n\n```\n{{error}}\n```\nPlease analyze and fix this.
-Review Other Pane Logs|Please analyze the logs from the selected pane:\n\n```\n{{pane:choose}}\n```
-Refactor Selected Code|Please refactor this code to improve readability:\n\n```\n{{selected}}\n```
-Review File Content|Please review the contents of this file:\n\n```\n{{file}}\n```
-Lint Specific File|!npx eslint {{file_path}}
-Deploy Component|Deploying {{var:component}} to {{var:environment}} on branch {{var:branch}}.
-Ask Custom Question|{{input}}
-!Run Git Status|git status
+Summarize Discussion|Please summarize the key points of our discussion so far.
 !Run Tests|npm test
+Refactor Selected Code|Please refactor this code to improve readability:\n\n```\n{{selected}}\n```
+Fix Terminal Error|I ran `{{last_command}}` and encountered this error:\n\n```\n{{error}}\n```\nPlease analyze and fix this.
+Review Git Changes|Please review the following git changes:\n\n```\n{{git_diff}}\n```
+Ask Custom Question|{{input}}
 
-# Candidate Generators
+# Candidate Generators (optional)
 $ branch: git branch --format="%(refname:short)"
 $ environment: echo -e "development\nstaging\nproduction"
 ````
+
+---
+
+## 🔀 Hybrid Multiplexer Support (Herdr & tmux)
+
+Mux Prompter natively supports **[Herdr](https://herdr.dev)** and **[tmux](https://github.com/tmux/tmux)** multiplexers via a unified backend abstraction layer.
+
+### Automatic Detection
+
+By default, Mux Prompter automatically detects which terminal multiplexer environment is currently active:
+- **`tmux`**: Detected when running inside a `tmux` session (`$TMUX` environment variable is set) or when `tmux` CLI responds.
+- **`herdr`**: Detected when `$HERDR_PLUGIN_CONTEXT_JSON` is present or running as a Herdr plugin entrypoint.
+
+### Environment Overrides
+
+You can explicitly override the backend selection by setting the `MUX_BACKEND` environment variable:
+
+```bash
+export MUX_BACKEND="tmux"   # Force tmux backend
+# or
+export MUX_BACKEND="herdr"  # Force Herdr backend
+```
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `MUX_BACKEND` | `auto`, `tmux`, or `herdr` | `auto` |
+| `TMUX_BIN_PATH` | Custom path to `tmux` executable | `tmux` |
+| `HERDR_BIN_PATH` | Custom path to `herdr` executable | `herdr` |
 
 ---
 
