@@ -1,6 +1,10 @@
 # Mux Prompter
 
 <p align="center">
+  <img src="assets/popup.png" alt="Mux Prompter Popup UI" width="600" />
+</p>
+
+<p align="center">
   <b>Fuzzy-pick and inject context-aware prompts into active Herdr and tmux panes.</b>
 </p>
 
