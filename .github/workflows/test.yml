@@ -18,7 +18,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq fzf
 
+      - name: Setup Bats
+        uses: bats-core/bats-action@3.0.0
+
       - name: Run test suite
         run: |
-          cd tests
-          bash test_prompter.sh
+          bats tests/test_prompter.bats
