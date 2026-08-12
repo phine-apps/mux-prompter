@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+
+if [ -n "$MOCK_LOG_DIR" ]; then
+  echo "tmux $*" >> "$MOCK_LOG_DIR/tmux_calls.log"
+fi
+
+if [ "$1" == "capture-pane" ]; then
+  echo -e "zsh\n\$ npm run dev\n[INFO] server started on port 3000\n[ERROR] database connection failed"
+  exit 0
+fi
+
+if [ "$1" == "list-panes" ]; then
+  echo "0.0 | %0 (/Users/oishik/apps/mux-prompter)"
+  echo "0.1 | %1 (/Users/oishik)"
+  exit 0
+fi
+
+if [ "$1" == "display-message" ]; then
+  if [ "$3" == "#{pane_id}" ]; then
+    echo "%0"
+  elif [ "$3" == "#{pane_current_path}" ]; then
+    echo "/Users/oishik/apps/mux-prompter"
+  fi
+  exit 0
+fi
+
+if [ "$1" == "show-buffer" ]; then
+  echo "mocked_tmux_buffer"
+  exit 0
+fi
+
+if [ "$1" == "info" ]; then
+  exit 0
+fi
+
+if [ "$1" == "show-option" ]; then
+  exit 0
+fi
+
+if [ "$1" == "display-popup" ]; then
+  # Version simulation for older tmux
+  if [ "$TMUX_POPUP_FAIL" == "1" ]; then
+    exit 1
+  fi
+  exit 0
+fi
+
+if [ "$1" == "send-keys" ]; then
+  # Echo the keys to stdout for test assertion
+  # Usually it is: tmux send-keys -t target -l "text" or keys
+  shift
+  last_arg=""
+  for arg in "$@"; do
+    last_arg="$arg"
+  done
+  echo "$last_arg"
+  exit 0
+fi
+
+exit 0
