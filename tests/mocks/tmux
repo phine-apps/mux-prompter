@@ -10,8 +10,10 @@ if [ "$1" == "capture-pane" ]; then
 fi
 
 if [ "$1" == "list-panes" ]; then
-  echo "0.0 | %0 (/Users/oishik/apps/mux-prompter)"
-  echo "0.1 | %1 (/Users/oishik)"
+  echo "0.0 | %0 (/mock/workspace)"
+  echo "0.1 | %1 (/mock/home)"
+  echo "0.2 | %10 (/mock/other1)"
+  echo "0.3 | %11 (/mock/other2)"
   exit 0
 fi
 
@@ -19,7 +21,7 @@ if [ "$1" == "display-message" ]; then
   if [ "$3" == "#{pane_id}" ]; then
     echo "%0"
   elif [ "$3" == "#{pane_current_path}" ]; then
-    echo "/Users/oishik/apps/mux-prompter"
+    echo "/mock/workspace"
   fi
   exit 0
 fi

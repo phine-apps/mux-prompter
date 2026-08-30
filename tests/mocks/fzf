@@ -23,8 +23,17 @@ if [[ "$args" == *"[Ctrl-R] History"* ]] || [[ "$args" == *"Select a prompt temp
     "file_path")    echo "File Path Test" ; exit 0 ;;
     "hang_test")    echo "Hang Prevention Test" ; exit 0 ;;
     "selected_test") echo "Refactor Selected Code" ; exit 0 ;;
+    "delete_template")
+      if [ ! -f "$MOCK_LOG_DIR/deleted_once.flag" ]; then
+        touch "$MOCK_LOG_DIR/deleted_once.flag"
+        echo "⚙️ Edit Templates"
+        exit 0
+      else
+        exit 130
+      fi
+      ;;
     "use_history")
-      echo "📜 Hello World History... | Hello World from history"
+      echo -e "📜 Hello World History...\tHello World from history"
       exit 0
       ;;
     "cancel")
@@ -37,20 +46,20 @@ if [[ "$args" == *"[Ctrl-R] History"* ]] || [[ "$args" == *"Select a prompt temp
 fi
 
 # Case 2: Custom variable select (service)
-if [[ "$args" == *"Select value for service:"* ]]; then
+if [[ "$args" == *"Select value for service"* ]]; then
   echo "frontend"
   exit 0
 fi
 
 # Case 3: Single Pane selection
 if [[ "$args" == *"Select a pane to import logs from:"* ]]; then
-  echo "0.1 | %1 (/Users/oishik)"
+  echo "0.1 | %1 (/mock/home)"
   exit 0
 fi
 
 # Case 4: Multiple Panes selection (broadcast)
 if [[ "$args" == *"Select target panes for broadcast"* ]]; then
-  echo -e "w2:p1 | No Label (/Users/oishik)\nw2:p3 | Prompter UI (/Users/oishik/apps/herdr-prompter)"
+  echo -e "w2:p1 | No Label (/mock/home)\nw2:p3 | Prompter UI (/mock/apps/mux-prompter)"
   exit 0
 fi
 
@@ -58,6 +67,14 @@ fi
 if [[ "$args" == *"Select a file to insert"* ]]; then
   echo "dummy_test_file.txt"
   exit 0
+fi
+
+# Case 6: Edit or Delete template selection
+if [[ "$args" == *"[Ctrl-D] Delete"* ]] || [[ "$args" == *"Select template to edit"* ]]; then
+  if [ "$TEST_STAGE" == "delete_template" ]; then
+    echo -e "ctrl-d\nReview Git Changes (review-git.md)"
+    exit 0
+  fi
 fi
 
 # Default fallback

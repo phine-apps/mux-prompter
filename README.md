@@ -30,9 +30,9 @@ By pressing a simple shortcut, a dynamic `fzf` UI pops up, allowing you to pick 
   │                                                              │
   │                                                       Select Template with Live Preview
   │                                                              │
-  └── 2. Instant Injection ◄─────────────────────────────────────┘
-        • Standard: Injected into input buffer for editing
-        • Bang (!): Executed immediately (e.g., !Run Tests)
+  └── 2. Safe Injection ◄────────────────────────────────────────┘
+        • Automatically resolves context placeholders and inserts prompt into buffer
+        • Review and edit in terminal before submitting
 ```
 
 ---
@@ -40,10 +40,10 @@ By pressing a simple shortcut, a dynamic `fzf` UI pops up, allowing you to pick 
 ## ✨ Key Features
 
 - ⚡ **Instant Prompt Launcher**: Quickly pick and insert reusable prompt templates into your terminal buffer.
+- 📁 **Markdown-Based Template Management**: Manage templates as clean, multiline `.md` files under `templates/` (supports subfolder categories).
 - 🔍 **Interactive Fuzzy Picking**: Search templates using `fzf` with a side-by-side live resolved preview.
 - 🤖 **Auto-Context Resolution**: Automatically gathers terminal logs, git diffs, branch names, file contents, and error tracebacks via `{{placeholders}}`.
 - 🎯 **Interactive Inputs**: Interactively prompt for missing variables, choose target panes, or pick files on-the-fly.
-- ⚡ **Immediate Execution (`!`)**: Templates starting with `!` execute immediately in the target pane without hitting Enter.
 - 📜 **Prompt History**: Automatically saves sent prompts so you can re-use previous prompts easily with `Ctrl-R`.
 
 ---
@@ -134,8 +134,7 @@ As you move your selection cursor, the right preview panel dynamically displays 
 
 Press **Enter** to confirm:
 
-- **Standard Templates**: The generated text is pasted into your active terminal pane so you can inspect or edit it before sending.
-- **Immediate Executables (`!`)**: If the title starts with `!` (e.g., `!Run Tests`), it is executed immediately as a shell command.
+- The generated text is safely pasted into your active terminal pane so you can inspect, edit, or submit it as needed.
 
 ---
 
@@ -178,26 +177,52 @@ You can use any of the following placeholders inside your prompt templates:
 
 ## 🛠️ Customization & Configuration
 
-Templates are loaded from `templates.txt` stored in your plugin configuration directory:
-`~/.config/herdr/plugins/github.phine-apps.mux-prompter/templates.txt`
-
-### Edit Templates via UI
-
-Select **`⚙️ Edit Templates`** from the `fzf` UI to open `templates.txt` in your editor (`$EDITOR` or `nano`/`vi`).
-
-### Template Syntax
-
-Each line in `templates.txt` follows the format:
+Templates are managed as individual Markdown files (`.md`) inside your plugin configuration directory:
+`~/.config/mux-prompter/templates/` (or `~/.config/herdr/plugins/github.phine-apps.mux-prompter/templates/`)
 
 ```text
-Title of Template|Actual prompt template text with {{placeholders}}
+~/.config/mux-prompter/
+├── templates/
+│   ├── _vars.txt                    # Custom variable candidate generators
+│   ├── fix-terminal-error.md
+│   ├── refactor-selected-code.md
+│   ├── review-git-changes.md
+│   ├── summarize-discussion.md
+│   └── git/                         # Subdirectories are automatically discovered
+│       └── commit-helper.md
+└── prompter_history.txt
 ```
 
-- Add a **`!`** prefix to the title for **immediate execution** (e.g., `!Run Tests|npm test`).
+### Template File Format (`.md`)
+
+Each template file is a standard, clean Markdown document:
+
+- **Title**: Defined by the first `# Heading` in the file. (If omitted, the file name without extension is used as the title.)
+- **Body**: Everything following the heading line is the prompt body.
+
+#### Example: `templates/fix-terminal-error.md`
+
+```markdown
+# Fix Terminal Error
+I ran `{{last_command}}` and encountered this error:
+
+```
+{{error}}
+```
+Please analyze and fix this.
+```
+
+### Edit & Delete Templates via UI
+
+Select **`⚙️ Edit Templates`** from the `fzf` UI to:
+- **`Enter`**: Open and edit the selected template file in your `$EDITOR` (`vi`, `nvim`, `nano`, etc.).
+- **`Ctrl-D`**: Delete the selected template file (with interactive `y/N` confirmation).
+- **`➕ [Create New Template]`**: Create and name a new `.md` template on-the-fly.
+- **`Esc`**: Return to the main template menu. Closing your editor also returns you to the main menu automatically.
 
 ### Custom Variable Candidate Generators (`$ name: command`)
 
-You can define candidate command generators for custom variables (`{{var:name}}`) at the bottom of `templates.txt` using the `$ name: command` syntax:
+You can define candidate command generators for custom variables (`{{var:name}}`) in `templates/_vars.txt` (or inside any template file):
 
 ```text
 # Candidate generators ($ var_name: shell_command)
@@ -207,22 +232,9 @@ $ environment: echo -e "development\nstaging\nproduction"
 
 When selecting a template containing `{{var:branch}}`, an `fzf` menu will automatically pop up with choices generated by `git branch`!
 
----
+### Automatic Migration from Legacy `templates.txt`
 
-## 📝 Example `templates.txt`
-
-````text
-Summarize Discussion|Please summarize the key points of our discussion so far.
-!Run Tests|npm test
-Refactor Selected Code|Please refactor this code to improve readability:\n\n```\n{{selected}}\n```
-Fix Terminal Error|I ran `{{last_command}}` and encountered this error:\n\n```\n{{error}}\n```\nPlease analyze and fix this.
-Review Git Changes|Please review the following git changes:\n\n```\n{{git_diff}}\n```
-Ask Custom Question|{{input}}
-
-# Candidate Generators (optional)
-$ branch: git branch --format="%(refname:short)"
-$ environment: echo -e "development\nstaging\nproduction"
-````
+If an existing single-file `templates.txt` is detected, Mux Prompter will **automatically convert** each line into its own `.md` file under `templates/`, migrate custom variables to `_vars.txt`, and safely back up the old file to `templates.txt.bak`.
 
 ---
 
