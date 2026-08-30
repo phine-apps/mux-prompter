@@ -179,7 +179,23 @@ mux_read_pane_logs() {
 mux_list_panes() {
   if [ "$CURRENT_BACKEND" = "tmux" ]; then
     if command -v "$TMUX_BIN" &>/dev/null; then
-      "$TMUX_BIN" list-panes -s -F '#{window_index}.#{pane_index} | #{pane_id} (#{pane_current_path})' 2>/dev/null | sed 's/^[[:space:]]*//'
+      local exclude_pane=""
+      if [ -n "$PROMPTER_CALLER_PANE" ] && [ -n "$TMUX_PANE" ] && [ "$PROMPTER_CALLER_PANE" != "$TMUX_PANE" ]; then
+        exclude_pane="$TMUX_PANE"
+      fi
+      "$TMUX_BIN" list-panes -s -F '#{window_index}.#{pane_index} | #{pane_id} (#{pane_current_path})' 2>/dev/null | awk -v exclude="$exclude_pane" '
+        {
+          if (exclude != "") {
+            split($0, parts, "|")
+            gsub(/^[ \t]+|[ \t]+$/, "", parts[2])
+            split(parts[2], pane_info, " ")
+            if (pane_info[1] == exclude) {
+              next
+            }
+          }
+          print $0
+        }
+      ' | sed 's/^[[:space:]]*//'
     fi
   else
     local panes_json

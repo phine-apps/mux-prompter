@@ -642,6 +642,28 @@ EOF
   [ "$output" = "%99" ]
 }
 
+@test "ADV-09: tmux pane listing excludes temporary pane when PROMPTER_CALLER_PANE differs from TMUX_PANE" {
+  export MUX_BACKEND="tmux"
+  export PROMPTER_CALLER_PANE="%0"
+  export TMUX_PANE="%1"
+  export TMUX_BIN="$BATS_TEST_DIRNAME/mocks/tmux"
+  export PATH="$BATS_TEST_DIRNAME/mocks:$PATH"
+  
+  run bash -c "
+    TMUX_BIN='$BATS_TEST_DIRNAME/mocks/tmux'
+    CURRENT_BACKEND='tmux'
+    PROMPTER_CALLER_PANE='%0'
+    TMUX_PANE='%1'
+    eval \"\$(sed -n '/^mux_list_panes() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    mux_list_panes
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"%0"* ]]
+  [[ "$output" != *"%1 "* ]]
+  [[ "$output" == *"%10"* ]]
+  [[ "$output" == *"%11"* ]]
+}
+
 @test "ADV-06: slugify handles dot-only titles (. or ..) safely" {
   run bash -c "
     eval \"\$(sed -n '/^slugify() {/,/^}/p' '$PROMPTER_SCRIPT')\"
