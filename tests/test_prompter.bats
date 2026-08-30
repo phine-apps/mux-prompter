@@ -504,6 +504,17 @@ EOF
   [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" == *"pane send-text w2:p3"* ]]
 }
 
+@test "X-04: Multi-Pane Broadcast (tmux - sending to self and other panes)" {
+  export TEST_STAGE="broadcast"
+  export MUX_BACKEND="tmux"
+  export TMUX_PANE="%0"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash -c "echo 'systemctl restart db' | bash '$PROMPTER_SCRIPT'"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$MOCK_LOG_DIR/tmux_calls.log")" == *"send-keys -t %0"* ]]
+  [[ "$(cat "$MOCK_LOG_DIR/tmux_calls.log")" == *"send-keys -t %1"* ]]
+}
+
 @test "I-06: Auto-detection (tmux)" {
   export TMUX="/tmp/tmux-1000/default,1234,0"
   export TMUX_PANE="%0"
@@ -598,7 +609,7 @@ EOF
   [[ "$output" == *"[Last executed command]"* ]]
 }
 
-@test "ADV-05: tmux pane listing correctly preserves %10, %11 when current pane is %1" {
+@test "ADV-05: tmux pane listing lists all panes including current pane (%0, %1, %10, %11)" {
   export MUX_BACKEND="tmux"
   export TARGET_PANE_ID="%1"
   export TMUX_BIN="$BATS_TEST_DIRNAME/mocks/tmux"
@@ -612,10 +623,23 @@ EOF
     mux_list_panes
   "
   [ "$status" -eq 0 ]
-  [[ "$output" != *"%1 "* ]]
   [[ "$output" == *"%0"* ]]
+  [[ "$output" == *"%1 "* ]]
   [[ "$output" == *"%10"* ]]
   [[ "$output" == *"%11"* ]]
+}
+
+@test "ADV-08: PROMPTER_CALLER_PANE overrides target pane ID for tmux" {
+  export MUX_BACKEND="tmux"
+  export PROMPTER_CALLER_PANE="%99"
+  export TMUX_PANE="%1"
+  run bash -c "
+    CURRENT_BACKEND='tmux'
+    eval \"\$(sed -n '/^mux_get_target_pane_id() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    mux_get_target_pane_id
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "%99" ]
 }
 
 @test "ADV-06: slugify handles dot-only titles (. or ..) safely" {

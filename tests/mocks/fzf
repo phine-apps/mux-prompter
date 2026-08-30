@@ -59,7 +59,11 @@ fi
 
 # Case 4: Multiple Panes selection (broadcast)
 if [[ "$args" == *"Select target panes for broadcast"* ]]; then
-  echo -e "w2:p1 | No Label (/mock/home)\nw2:p3 | Prompter UI (/mock/apps/mux-prompter)"
+  if [ "$MUX_BACKEND" = "tmux" ]; then
+    echo -e "0.0 | %0 (/mock/workspace)\n0.1 | %1 (/mock/home)"
+  else
+    echo -e "w2:p1 | No Label (/mock/home)\nw2:p3 | Prompter UI (/mock/apps/mux-prompter)"
+  fi
   exit 0
 fi
 

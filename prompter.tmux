@@ -23,8 +23,8 @@ fi
 
 # Register keybinding in tmux automatically
 if tmux display-popup -h 1 -w 1 true &>/dev/null; then
-  tmux bind-key "$key_binding" display-popup -E -w "$popup_width" -h "$popup_height" "$CURRENT_DIR/prompter.sh"
+  tmux bind-key "$key_binding" display-popup -E -w "$popup_width" -h "$popup_height" "PROMPTER_CALLER_PANE='#{pane_id}' $CURRENT_DIR/prompter.sh"
 else
   # Fallback to split-window for older tmux versions (pre-3.2)
-  tmux bind-key "$key_binding" split-window -h -c "#{pane_current_path}" "$CURRENT_DIR/prompter.sh"
+  tmux bind-key "$key_binding" split-window -h -c "#{pane_current_path}" "PROMPTER_CALLER_PANE='#{pane_id}' $CURRENT_DIR/prompter.sh"
 fi

@@ -97,7 +97,11 @@ CURRENT_BACKEND=$(detect_backend)
 mux_get_target_pane_id() {
   local context_json="${1:-$HERDR_PLUGIN_CONTEXT_JSON}"
   if [ "$CURRENT_BACKEND" = "tmux" ]; then
-    if [ -n "$TMUX_PANE" ]; then
+    if [ -n "$PROMPTER_TARGET_PANE" ]; then
+      echo "$PROMPTER_TARGET_PANE"
+    elif [ -n "$PROMPTER_CALLER_PANE" ]; then
+      echo "$PROMPTER_CALLER_PANE"
+    elif [ -n "$TMUX_PANE" ]; then
       echo "$TMUX_PANE"
     elif command -v "$TMUX_BIN" &>/dev/null; then
       local pid
@@ -175,16 +179,7 @@ mux_read_pane_logs() {
 mux_list_panes() {
   if [ "$CURRENT_BACKEND" = "tmux" ]; then
     if command -v "$TMUX_BIN" &>/dev/null; then
-      "$TMUX_BIN" list-panes -s -F '#{window_index}.#{pane_index} | #{pane_id} (#{pane_current_path})' 2>/dev/null | awk -v target="$TARGET_PANE_ID" '
-        {
-          split($0, parts, "|")
-          gsub(/^[ \t]+|[ \t]+$/, "", parts[2])
-          split(parts[2], pane_info, " ")
-          if (pane_info[1] != target) {
-            print $0
-          }
-        }
-      ' | sed 's/^[[:space:]]*//'
+      "$TMUX_BIN" list-panes -s -F '#{window_index}.#{pane_index} | #{pane_id} (#{pane_current_path})' 2>/dev/null | sed 's/^[[:space:]]*//'
     fi
   else
     local panes_json
@@ -194,7 +189,6 @@ mux_list_panes() {
       tabs_json=$("$HERDR_BIN" tab list 2>/dev/null || echo "{}")
       echo "$panes_json" | jq -r --argjson tabs_obj "$tabs_json" '
         [.result.panes[] |
-        select(.pane_id != "'"$TARGET_PANE_ID"'") |
         . as $pane |
         (($tabs_obj.result.tabs[]? | select(.tab_id == $pane.tab_id)) // {}) as $tab |
         {
@@ -215,7 +209,11 @@ mux_send_text() {
     if [ -n "$target_pid" ] && [ "$target_pid" != "current" ]; then
       target_opt=(-t "$target_pid")
     fi
-    "$TMUX_BIN" send-keys "${target_opt[@]}" -l "$text" 2>/dev/null
+    if [ -n "$TMUX_PANE" ] && [ "$target_pid" = "$TMUX_PANE" ] && [ -t 1 ]; then
+      (sleep 0.05 && "$TMUX_BIN" send-keys "${target_opt[@]}" -l "$text") &>/dev/null &
+    else
+      "$TMUX_BIN" send-keys "${target_opt[@]}" -l "$text" 2>/dev/null
+    fi
   else
     if [ "$target_pid" != "current" ]; then
       "$HERDR_BIN" pane send-text "$target_pid" "$text" 2>/dev/null
