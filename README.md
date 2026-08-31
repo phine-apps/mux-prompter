@@ -214,7 +214,7 @@ Please analyze and fix this.
 
 ### Edit & Delete Templates via UI
 
-Select **`⚙️ Edit Templates`** from the `fzf` UI to:
+Select **`🔧 Edit Templates`** from the `fzf` UI to:
 - **`Enter`**: Open and edit the selected template file in your `$EDITOR` (`vi`, `nvim`, `nano`, etc.).
 - **`Ctrl-D`**: Delete the selected template file (with interactive `y/N` confirmation).
 - **`➕ [Create New Template]`**: Create and name a new `.md` template on-the-fly.

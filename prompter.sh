@@ -927,7 +927,7 @@ if [ "$1" == "--list-templates" ]; then
   for title in "${TEMPLATES_TITLES[@]}"; do
     echo "$title"
   done
-  echo "⚙️ Edit Templates"
+  echo "🔧 Edit Templates"
   exit 0
 fi
 
@@ -942,7 +942,7 @@ if [ "$1" == "--list-all" ]; then
   for title in "${TEMPLATES_TITLES[@]}"; do
     echo "$title"
   done
-  echo "⚙️ Edit Templates"
+  echo "🔧 Edit Templates"
   exit 0
 fi
 
@@ -983,7 +983,7 @@ if [ "$1" == "--preview-only" ]; then
   done
   
   if [ -z "$TEMPLATE_BODY" ]; then
-    if [ "$SELECTED_TITLE" == "⚙️ Edit Templates" ]; then
+    if [ "$SELECTED_TITLE" == "🔧 Edit Templates" ]; then
       echo "Open templates directory: $TEMPLATES_DIR"
     else
       echo "No template found."
@@ -1066,7 +1066,7 @@ while true; do
     # Re-save to push to top of history
     save_to_history "$FINAL_PROMPT"
     break
-  elif [ "$SELECTED_OPTION" == "⚙️ Edit Templates" ]; then
+  elif [ "$SELECTED_OPTION" == "🔧 Edit Templates" ]; then
     MY_EDITOR="${EDITOR:-nano}"
     if ! command -v "$MY_EDITOR" &>/dev/null; then
       MY_EDITOR="vi"
