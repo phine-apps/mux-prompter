@@ -294,11 +294,17 @@ slugify() {
   echo "$slug"
 }
 
-# Safe newline decoder: decodes only literal '\n' to actual newlines without touching other escapes
+# Safe newline decoder: decodes literal '\n' to actual newlines, preserving escaped '\\n' as '\n' without touching other escapes
 decode_literal_newlines() {
   local str="$1"
   if command -v python3 &>/dev/null; then
-    printf '%s' "$str" | python3 -c "import sys; print(sys.stdin.read().replace(r'\n', '\n'), end='')"
+    printf '%s' "$str" | python3 -c 'import sys
+s = sys.stdin.read()
+s = s.replace(r"\\n", "\x00LITERAL_BS_N\x00")
+s = s.replace(r"\n", "\n")
+s = s.replace("\x00LITERAL_BS_N\x00", r"\n")
+sys.stdout.write(s)
+'
   else
     printf '%s' "$str" | awk '
       BEGIN { content = "" }
@@ -307,7 +313,10 @@ decode_literal_newlines() {
         len = length(content)
         out = ""
         for (i = 1; i <= len; i++) {
-          if (substr(content, i, 2) == "\\n") {
+          if (substr(content, i, 3) == "\\\\n") {
+            out = out "\\n"
+            i += 2
+          } else if (substr(content, i, 2) == "\\n") {
             out = out "\n"
             i++
           } else {

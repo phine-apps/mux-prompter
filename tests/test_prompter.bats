@@ -251,18 +251,19 @@ EOF
   [[ "$(cat "$TEMP_CONFIG_DIR/templates/テスト実行.md")" == *"# !テスト実行"* ]]
 }
 
-@test "T-07: Migration escape preservation (e.g. Windows paths)" {
+@test "T-07: Migration escape preservation (e.g. Windows paths and escaped newlines)" {
   TEMP_CONFIG_DIR="$TEST_TEMP_DIR/temp_config_t07"
   mkdir -p "$TEMP_CONFIG_DIR"
   cat << 'EOF' > "$TEMP_CONFIG_DIR/templates.txt"
-Path Prompt|Windows path is C:\Users\alice\note\nSecond line after newline
+Path Prompt|Windows path is C:\Projects\app\docs and C:\Projects\app\\note\nSecond line after newline
 EOF
   export HERDR_PLUGIN_CONFIG_DIR="$TEMP_CONFIG_DIR"
   export TEST_STAGE="cancel"
   run bash "$PROMPTER_SCRIPT"
   
   [ -f "$TEMP_CONFIG_DIR/templates/path-prompt.md" ]
-  [[ "$(cat "$TEMP_CONFIG_DIR/templates/path-prompt.md")" == *"C:\Users\alice\note"* ]]
+  [[ "$(cat "$TEMP_CONFIG_DIR/templates/path-prompt.md")" == *"C:\Projects\app\docs"* ]]
+  [[ "$(cat "$TEMP_CONFIG_DIR/templates/path-prompt.md")" == *"C:\Projects\app\note"* ]]
   [[ "$(cat "$TEMP_CONFIG_DIR/templates/path-prompt.md")" == *"Second line after newline"* ]]
 }
 
@@ -575,10 +576,10 @@ EOF
 Code: {{selected}}
 EOF
   # Selected text contains backslash-c, backslash-t, and Windows path
-  ESCAPE_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\", \"selected_text\": \"C:\\\\Users\\\\alice\\\\notes\\\\file.txt with \\\\c and \\\\t inside\"}"
+  ESCAPE_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\", \"selected_text\": \"C:\\\\Projects\\\\app\\\\notes\\\\file.txt with \\\\c and \\\\t inside\"}"
   run bash "$PROMPTER_SCRIPT" --preview-only "Escape Test" "$ESCAPE_CONTEXT"
   [ "$status" -eq 0 ]
-  [[ "$output" == *'C:\Users\alice\notes\file.txt with \c and \t inside'* ]]
+  [[ "$output" == *'C:\Projects\app\notes\file.txt with \c and \t inside'* ]]
 }
 
 @test "ADV-03: Preview handles single quotes and complex context JSON without syntax error" {
@@ -773,13 +774,13 @@ EOF
       '\''
     }
     res1=$(safe_replace_awk "Hello TARGET World" "TARGET" "Tom & Jerry")
-    res2=$(safe_replace_awk "Path: TARGET" "TARGET" "C:\Users\alice\note\file.txt")
+    res2=$(safe_replace_awk "Path: TARGET" "TARGET" "C:\Projects\app\note\file.txt")
     echo "RES1:$res1"
     echo "RES2:$res2"
   '
   [ "$status" -eq 0 ]
   expected_res1="RES1:Hello Tom & Jerry World"
-  expected_res2="RES2:Path: C:\Users\alice\note\file.txt"
+  expected_res2="RES2:Path: C:\Projects\app\note\file.txt"
   [[ "$output" == *"$expected_res1"* ]]
   [[ "$output" == *"$expected_res2"* ]]
 }
