@@ -45,19 +45,28 @@ safe_replace() {
   if command -v python3 &>/dev/null; then
     printf '%s' "$content" | python3 -c "import sys; print(sys.stdin.read().replace(sys.argv[1], sys.argv[2]), end='')" "$target" "$replacement"
   else
-    # Fallback to awk (robust standard tool, memory-accumulated to bypass BSD/GNU RS differences)
-    printf '%s' "$content" | awk -v t="$target" -v r="$replacement" '
+    # Fallback to awk using ENVIRON to prevent -v escape sequence mangling and literal index/substr replacement
+    printf '%s' "$content" | TARGET="$target" REPLACEMENT="$replacement" awk '
+      BEGIN {
+        content = ""
+      }
       {
         content = (NR == 1) ? $0 : content "\n" $0
       }
       END {
-        gsub(/\\/, "\\\\", r)
-        gsub(/&/, "\\\\&", r)
-        split(content, parts, t)
-        out = parts[1]
-        for (i = 2; i <= length(parts); i++) {
-          out = out r parts[i]
+        t = ENVIRON["TARGET"]
+        r = ENVIRON["REPLACEMENT"]
+        if (t == "") {
+          printf "%s", content
+          exit
         }
+        len_t = length(t)
+        out = ""
+        while ((idx = index(content, t)) > 0) {
+          out = out substr(content, 1, idx - 1) r
+          content = substr(content, idx + len_t)
+        }
+        out = out content
         printf "%s", out
       }
     '
@@ -210,7 +219,7 @@ mux_list_panes() {
         {
           tab_num: ($tab.number // 999),
           pane_id: $pane.pane_id,
-          line: "Tab \($tab.label // $tab.number // "??") | \($pane.label // $pane.pane_id) (\($pane.cwd))"
+          line: "Tab \($tab.label // $tab.number // "??") | \($pane.pane_id)\(if $pane.label and $pane.label != "" and $pane.label != $pane.pane_id then " (\($pane.label))" else "" end) (\($pane.cwd))"
         }] | sort_by(.tab_num, .pane_id)[].line
       ' 2>/dev/null
     fi
@@ -275,6 +284,8 @@ slugify() {
   # Replace filesystem prohibited characters (/\:*?"<>|) and control chars and spaces with hyphens
   local slug
   slug=$(printf '%s' "$clean_title" | tr '[:upper:]' '[:lower:]' | sed -E 's/[/\\:*?"<>|[:cntrl:][:space:]]+/-/g' | sed -E 's/^-+|-+$//g')
+  # Truncate to maximum 60 characters to prevent filesystem filename length limits (NAME_MAX)
+  slug=$(printf '%s' "$slug" | cut -c1-60 | sed -E 's/-+$//')
   # Guard against slugs consisting solely of dots
   slug=$(printf '%s' "$slug" | sed -E 's/^\.+$//')
   if [ -z "$slug" ]; then
@@ -289,10 +300,23 @@ decode_literal_newlines() {
   if command -v python3 &>/dev/null; then
     printf '%s' "$str" | python3 -c "import sys; print(sys.stdin.read().replace(r'\n', '\n'), end='')"
   else
-    printf '%s' "$str" | awk '{
-      gsub(/\\n/, "\n")
-      print
-    }'
+    printf '%s' "$str" | awk '
+      BEGIN { content = "" }
+      { content = (NR == 1) ? $0 : content "\n" $0 }
+      END {
+        len = length(content)
+        out = ""
+        for (i = 1; i <= len; i++) {
+          if (substr(content, i, 2) == "\\n") {
+            out = out "\n"
+            i++
+          } else {
+            out = out substr(content, i, 1)
+          }
+        }
+        printf "%s", out
+      }
+    '
   fi
 }
 
@@ -441,6 +465,7 @@ load_templates() {
       title="$(basename "$file" .md)"
       body="$(cat "$file")"
     fi
+    title=$(printf '%s' "$title" | tr '\t' ' ')
     raw_titles+=("$title")
     raw_bodies+=("$body")
     raw_paths+=("$file")
@@ -523,7 +548,7 @@ save_to_history() {
     mkdir -p "$(dirname "$HISTORY_FILE")"
     # Write new item and append existing items excluding duplicates atomically
     if [ -f "$HISTORY_FILE" ]; then
-      (echo "$escaped_text"; grep -vxF "$escaped_text" "$HISTORY_FILE" 2>/dev/null || true) | head -n 50 > "${HISTORY_FILE}.tmp"
+      (echo "$escaped_text"; grep -vxF -e "$escaped_text" -- "$HISTORY_FILE" 2>/dev/null || true) | head -n 50 > "${HISTORY_FILE}.tmp"
       mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
     else
       echo "$escaped_text" > "$HISTORY_FILE"
@@ -595,10 +620,6 @@ resolve_placeholders() {
     fi
   fi
 
-  # 3. {{selected}}
-  if [[ "$prompt" == *"{{selected}}"* ]]; then
-    prompt=$(safe_replace "$prompt" "{{selected}}" "$SELECTED_TEXT")
-  fi
 
   # 4. Git placeholders
   if [[ "$prompt" == *"{{git_diff:staged}}"* ]]; then
@@ -698,10 +719,13 @@ resolve_placeholders() {
         line_clean=$(echo "$line" | sed -E 's/[[:space:]]{2,}.*$//')
         
         local cmd_candidate=""
-        # Case A: Standard prompt terminator ($ or % or # or ❯ or ▶) with trailing space
-        if echo "$line_clean" | grep -q -E "(\\\$|%|#|❯|▶)[[:space:]]+"; then
-          cmd_candidate=$(echo "$line_clean" | sed -E "s/^.*(\\\$|%|#|❯|▶)[[:space:]]+//")
-        # Case B: oh-my-zsh style: ➜  dir git:(main) ✗ cmd
+        # Case A: Standard prompt terminator ($ or % or #) with trailing space
+        if echo "$line_clean" | grep -q -E "(\\\$|%|#)[[:space:]]+"; then
+          cmd_candidate=$(echo "$line_clean" | sed -E 's/^[^\$#%]*[\$#%][[:space:]]+//')
+        # Case B: Unicode prompt terminators (❯, ▶)
+        elif echo "$line_clean" | grep -q -E "(❯|▶)[[:space:]]+"; then
+          cmd_candidate=$(echo "$line_clean" | sed -E 's/^[^❯▶]*(❯|▶)[[:space:]]+//')
+        # Case C: oh-my-zsh style: ➜  dir git:(main) ✗ cmd
         elif echo "$line_clean" | grep -q -E "^➜[[:space:]]+.*git:\([^)]+\)[[:space:]]*[^[:space:]]*[[:space:]]+"; then
           cmd_candidate=$(echo "$line_clean" | sed -E "s/^➜[[:space:]]+.*git:\([^)]+\)[[:space:]]*[^[:space:]]*[[:space:]]+//")
         elif echo "$line_clean" | grep -q -E "^➜[[:space:]]+"; then
@@ -918,6 +942,11 @@ resolve_placeholders() {
     fi
   fi
 
+  # 9. {{selected}} (Resolved last to prevent code/clipboard contents from triggering subsequent placeholder expansions)
+  if [[ "$prompt" == *"{{selected}}"* ]]; then
+    prompt=$(safe_replace "$prompt" "{{selected}}" "$SELECTED_TEXT")
+  fi
+
   RESOLVED_PROMPT="$prompt"
 }
 
@@ -1038,7 +1067,7 @@ while true; do
     --layout=reverse \
     --delimiter=$'\t' \
     --with-nth=1 \
-    --preview="bash \"$SCRIPT_PATH\" --preview-only {q}" \
+    --preview="bash \"$SCRIPT_PATH\" --preview-only {}" \
     --preview-window=right:50%:wrap \
     --bind "ctrl-r:reload(bash \"$SCRIPT_PATH\" --list-history)+change-prompt(History> )" \
     --bind "ctrl-t:reload(bash \"$SCRIPT_PATH\" --list-templates)+change-prompt(Templates> )" \
@@ -1067,9 +1096,14 @@ while true; do
     save_to_history "$FINAL_PROMPT"
     break
   elif [ "$SELECTED_OPTION" == "🔧 Edit Templates" ]; then
-    MY_EDITOR="${EDITOR:-nano}"
-    if ! command -v "$MY_EDITOR" &>/dev/null; then
-      MY_EDITOR="vi"
+    MY_EDITOR="${VISUAL:-${EDITOR:-nano}}"
+    editor_bin=$(echo "$MY_EDITOR" | awk '{print $1}')
+    if ! command -v "$editor_bin" &>/dev/null; then
+      if command -v nano &>/dev/null; then
+        MY_EDITOR="nano"
+      else
+        MY_EDITOR="vi"
+      fi
     fi
     
     # Prompt user to choose template to edit or create new template
@@ -1156,7 +1190,7 @@ while true; do
     if [ -n "$target_edit_file" ]; then
       clear
       echo "Opening template: $target_edit_file"
-      "$MY_EDITOR" "$target_edit_file"
+      eval "$MY_EDITOR \"\$target_edit_file\""
     fi
     # Loop back to main menu after editor exits
     continue

@@ -701,3 +701,108 @@ EOF
   [ -f "$TEMP_CONFIG_DIR/templates/new-custom-template.md" ]
   [[ "$(cat "$TEMP_CONFIG_DIR/templates/new-custom-template.md")" == *"# New Custom Template"* ]]
 }
+
+@test "ADV-10: save_to_history handles hyphen-prefixed prompts (-m, --flag) without grep errors" {
+  TEMP_CONFIG_DIR="$TEST_TEMP_DIR/temp_config_adv10"
+  mkdir -p "$TEMP_CONFIG_DIR"
+  export HERDR_PLUGIN_CONFIG_DIR="$TEMP_CONFIG_DIR"
+  
+  run bash -c "
+    HISTORY_FILE='$TEMP_CONFIG_DIR/prompter_history.txt'
+    eval \"\$(sed -n '/^save_to_history() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    save_to_history '-m \"commit message\"'
+    save_to_history '--verbose flag test'
+    save_to_history '-m \"commit message\"'
+    cat \"\$HISTORY_FILE\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'-m "commit message"'* ]]
+  [[ "$output" == *'--verbose flag test'* ]]
+  # Verify deduplication worked and item appears once
+  [ "$(echo "$output" | grep -c -- '-m "commit message"')" -eq 1 ]
+}
+
+@test "ADV-11: {{last_command}} does not greedily truncate commands containing $ or #" {
+  run bash -c '
+    line_clean="user@box:~$ echo \$FOO \$ BAR # production comment"
+    cmd_candidate=""
+    if echo "$line_clean" | grep -q -E "(\\\$|%|#)[[:space:]]+"; then
+      cmd_candidate=$(echo "$line_clean" | sed -E '\''s/^[^\$#%]*[\$#%][[:space:]]+//'\'')
+    fi
+    echo "$cmd_candidate"
+  '
+  [ "$status" -eq 0 ]
+  [ "$output" = 'echo $FOO $ BAR # production comment' ]
+}
+
+@test "ADV-12: {{selected}} containing other placeholder syntax is not recursively expanded" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/selected-recursive.md"
+# Selected Recursive Test
+Start
+{{selected}}
+End
+EOF
+  RECURSIVE_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\", \"selected_text\": \"function() { return '{{git_diff}} and {{error}}'; }\"}"
+  run bash "$PROMPTER_SCRIPT" --preview-only "Selected Recursive Test" "$RECURSIVE_CONTEXT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"function() { return '{{git_diff}} and {{error}}'; }"* ]]
+}
+
+@test "ADV-13: safe_replace awk fallback preserves ampersands and backslashes without corruption" {
+  run bash -c '
+    safe_replace_awk() {
+      local content="$1"
+      local target="$2"
+      local replacement="$3"
+      printf "%s" "$content" | TARGET="$target" REPLACEMENT="$replacement" awk '\''
+        BEGIN { content = "" }
+        { content = (NR == 1) ? $0 : content "\n" $0 }
+        END {
+          t = ENVIRON["TARGET"]
+          r = ENVIRON["REPLACEMENT"]
+          if (t == "") { printf "%s", content; exit }
+          len_t = length(t)
+          out = ""
+          while ((idx = index(content, t)) > 0) {
+            out = out substr(content, 1, idx - 1) r
+            content = substr(content, idx + len_t)
+          }
+          out = out content
+          printf "%s", out
+        }
+      '\''
+    }
+    res1=$(safe_replace_awk "Hello TARGET World" "TARGET" "Tom & Jerry")
+    res2=$(safe_replace_awk "Path: TARGET" "TARGET" "C:\Users\alice\note\file.txt")
+    echo "RES1:$res1"
+    echo "RES2:$res2"
+  '
+  [ "$status" -eq 0 ]
+  expected_res1="RES1:Hello Tom & Jerry World"
+  expected_res2="RES2:Path: C:\Users\alice\note\file.txt"
+  [[ "$output" == *"$expected_res1"* ]]
+  [[ "$output" == *"$expected_res2"* ]]
+}
+
+@test "ADV-14: slugify truncates long titles over 60 characters to avoid NAME_MAX limits" {
+  run bash -c "
+    eval \"\$(sed -n '/^slugify() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    long_title=\"\$(printf 'a%.0s' {1..300})\"
+    slug=\$(slugify \"\$long_title\")
+    echo \"Length: \${#slug}\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "Length: 60" ]
+}
+
+@test "ADV-15: template title with tabs does not collide with history delimiter" {
+  mkdir -p "$MOCK_CONFIG_DIR/templates"
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/tab-title.md"
+# Tab	Title	Test
+Body of tab title test
+EOF
+  run bash "$PROMPTER_SCRIPT" --list-templates
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Tab Title Test"* ]]
+  [[ "$output" != *"Tab	Title"* ]]
+}
