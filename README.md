@@ -54,6 +54,7 @@ Ensure you have the following CLI tools installed:
 
 - **`fzf`**: Command-line fuzzy finder.
 - **`jq`**: Command-line JSON processor.
+- *(Optional)* **`python3`**: Recommended for optimal string replacement performance (an automatic robust `awk` fallback is included if Python 3 is unavailable).
 
 ---
 
@@ -107,10 +108,13 @@ set -g @prompter-height '60%'  # Custom popup height (default: 60%)
    ```
 
 2. **Add Keybinding to `~/.tmux.conf`**:
-   ```tmux
-   # Bind prefix + P (Shift+P) to open Mux Prompter in a popup window
-   bind-key P display-popup -E -w 80% -h 60% "~/apps/mux-prompter/prompter.sh"
-   ```
+    ```tmux
+    # Bind prefix + P (Shift+P) to open Mux Prompter in a popup window
+    bind-key P display-popup -E -w 80% -h 60% "PROMPTER_CALLER_PANE='#{pane_id}' ~/apps/mux-prompter/prompter.sh"
+
+    # Fallback for older tmux versions (< 3.2 without display-popup support):
+    # bind-key P split-window -h -c "#{pane_current_path}" "PROMPTER_CALLER_PANE='#{pane_id}' ~/apps/mux-prompter/prompter.sh"
+    ```
 
 ---
 
@@ -215,7 +219,7 @@ Please analyze and fix this.
 ### Edit & Delete Templates via UI
 
 Select **`🔧 Edit Templates`** from the `fzf` UI to:
-- **`Enter`**: Open and edit the selected template file in your `$EDITOR` (`vi`, `nvim`, `nano`, etc.).
+- **`Enter`**: Open and edit the selected template file in your `$VISUAL` or `$EDITOR` (`nvim`, `vi`, `nano`, or editors with flags like `code --wait`).
 - **`Ctrl-D`**: Delete the selected template file (with interactive `y/N` confirmation).
 - **`➕ [Create New Template]`**: Create and name a new `.md` template on-the-fly.
 - **`Esc`**: Return to the main template menu. Closing your editor also returns you to the main menu automatically.
@@ -263,6 +267,8 @@ export MUX_BACKEND="herdr"  # Force Herdr backend
 | `MUX_BACKEND` | `auto`, `tmux`, or `herdr` | `auto` |
 | `TMUX_BIN_PATH` | Custom path to `tmux` executable | `tmux` |
 | `HERDR_BIN_PATH` | Custom path to `herdr` executable | `herdr` |
+| `PROMPTER_CALLER_PANE` | Originating pane ID in tmux (passed automatically by TPM / popup binding) | Current pane |
+| `PROMPTER_TARGET_PANE` | Explicitly targets a specific pane ID for prompt injection | Detected active pane |
 
 ---
 

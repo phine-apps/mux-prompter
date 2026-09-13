@@ -334,6 +334,7 @@ migrate_legacy_templates() {
   if [ -f "$LEGACY_TEMPLATES_FILE" ]; then
     mkdir -p "$TEMPLATES_DIR" 2>/dev/null || true
     while IFS= read -r line || [ -n "$line" ]; do
+      line=$(printf '%s' "$line" | tr -d '\r')
       [[ "$line" =~ ^[[:space:]]*$ ]] && continue
       [[ "$line" =~ ^# ]] && continue
       
@@ -466,15 +467,15 @@ load_templates() {
   for file in "${md_files[@]}"; do
     [ ! -f "$file" ] && continue
     local first_line title body
-    first_line=$(head -n 1 "$file")
+    first_line=$(head -n 1 "$file" | tr -d '\r')
     if [[ "$first_line" =~ ^#[[:space:]]*(.+) ]]; then
       title="${BASH_REMATCH[1]}"
-      body=$(sed '1d' "$file" | awk 'NF {found=1} found {print}')
+      body=$(sed '1d' "$file" | tr -d '\r' | awk 'NF {found=1} found {print}')
     else
       title="$(basename "$file" .md)"
-      body="$(cat "$file")"
+      body="$(tr -d '\r' < "$file")"
     fi
-    title=$(printf '%s' "$title" | tr '\t' ' ')
+    title=$(printf '%s' "$title" | tr '\t\r' '  ' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
     raw_titles+=("$title")
     raw_bodies+=("$body")
     raw_paths+=("$file")
@@ -547,8 +548,27 @@ load_history_options() {
 save_to_history() {
   local text="$1"
   local escaped_text
-  escaped_text=$(printf '%s' "$text" | awk 'BEGIN {ORS="\\n"} {print}')
-  escaped_text=${escaped_text%\\n}
+  if command -v python3 &>/dev/null; then
+    escaped_text=$(printf '%s' "$text" | python3 -c 'import sys
+text = sys.stdin.read()
+print(text.replace(r"\n", r"\\n").replace("\n", r"\n"), end="")
+')
+  else
+    escaped_text=$(printf '%s' "$text" | awk '
+      BEGIN { first = 1; out = "" }
+      {
+        line = $0
+        gsub(/\\n/, "\\\\n", line)
+        if (first) {
+          out = line
+          first = 0
+        } else {
+          out = out "\\n" line
+        }
+      }
+      END { printf "%s", out }
+    ')
+  fi
   
   # Skip saving if the text is empty or contains only whitespace/newlines
   local check_content
@@ -581,23 +601,30 @@ get_clipboard_text() {
   fi
 }
 
-# Resolve all placeholders
+# Resolve all placeholders using non-recursive sentinel substitution
 resolve_placeholders() {
   local prompt="$1"
   local is_preview="$2" # "true" or "false"
 
-  # 1. Interactive variables {{var:name}} (Resolved first to prevent parsing variables inside expanded code/diffs)
+  local nonce="MUXPH_${$}_${RANDOM}"
+  local tokens=()
+  local values=()
+
+  # 1. Interactive variables {{var:name}}
   local vars
   vars=$(echo "$prompt" | grep -oE "\{\{var:[a-zA-Z0-9_]+\}\}" | sort -u)
   for v in $vars; do
     local var_name
     var_name=$(echo "$v" | sed -E 's/\{\{var:([a-zA-Z0-9_]+)\}\}/\1/')
+    local tok="__${nonce}_VAR_${var_name}__"
+    prompt=$(safe_replace "$prompt" "$v" "$tok")
+
+    local user_val=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "$v" "[Enter value for $var_name]")
+      user_val="[Enter value for $var_name]"
     else
       local cmd
       cmd=$(get_var_cmd "$var_name")
-      local user_val=""
       if [ -n "$cmd" ]; then
         local candidates
         candidates=$(eval "$cmd" 2>/dev/null)
@@ -613,27 +640,32 @@ resolve_placeholders() {
         echo -n "Enter value for [$var_name]: " >&2
         read -r user_val
       fi
-      prompt=$(safe_replace "$prompt" "$v" "$user_val")
     fi
+    tokens+=("$tok")
+    values+=("$user_val")
   done
 
-  # 2. {{input}} (Resolved early to avoid parsing inside expanded contents)
+  # 2. {{input}}
   if [[ "$prompt" == *"{{input}}"* ]]; then
+    local tok="__${nonce}_INPUT__"
+    prompt=$(safe_replace "$prompt" "{{input}}" "$tok")
+    local user_input=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{input}}" "[Your custom input]")
+      user_input="[Your custom input]"
     else
       echo "Enter your custom question/prompt (press Ctrl+D when finished):" >&2
-      local user_input
       user_input=$(cat)
-      prompt=$(safe_replace "$prompt" "{{input}}" "$user_input")
     fi
+    tokens+=("$tok")
+    values+=("$user_input")
   fi
 
-
-  # 4. Git placeholders
+  # 3. Git placeholders
   if [[ "$prompt" == *"{{git_diff:staged}}"* ]]; then
+    local tok="__${nonce}_GITDIFFSTAGED__"
+    prompt=$(safe_replace "$prompt" "{{git_diff:staged}}" "$tok")
+    local diff_val=""
     if [ "$is_preview" == "true" ]; then
-      local diff_val
       diff_val=$(safe_git diff --cached 2>/dev/null | head -n 25)
       if [ -n "$diff_val" ]; then
         if [ "$(safe_git diff --cached 2>/dev/null | wc -l)" -gt 25 ]; then
@@ -642,17 +674,18 @@ resolve_placeholders() {
       else
         diff_val="No staged git changes"
       fi
-      prompt=$(safe_replace "$prompt" "{{git_diff:staged}}" "$diff_val")
     else
-      local diff_val
       diff_val=$(safe_git diff --cached 2>/dev/null)
-      prompt=$(safe_replace "$prompt" "{{git_diff:staged}}" "$diff_val")
     fi
+    tokens+=("$tok")
+    values+=("$diff_val")
   fi
 
   if [[ "$prompt" == *"{{git_diff}}"* ]]; then
+    local tok="__${nonce}_GITDIFF__"
+    prompt=$(safe_replace "$prompt" "{{git_diff}}" "$tok")
+    local diff_val=""
     if [ "$is_preview" == "true" ]; then
-      local diff_val
       diff_val=$(safe_git diff 2>/dev/null | head -n 25)
       if [ -n "$diff_val" ]; then
         if [ "$(safe_git diff 2>/dev/null | wc -l)" -gt 25 ]; then
@@ -661,85 +694,98 @@ resolve_placeholders() {
       else
         diff_val="No git changes"
       fi
-      prompt=$(safe_replace "$prompt" "{{git_diff}}" "$diff_val")
     else
-      local diff_val
       diff_val=$(safe_git diff 2>/dev/null)
-      prompt=$(safe_replace "$prompt" "{{git_diff}}" "$diff_val")
     fi
+    tokens+=("$tok")
+    values+=("$diff_val")
   fi
 
   if [[ "$prompt" == *"{{git_status}}"* ]]; then
+    local tok="__${nonce}_GITSTATUS__"
+    prompt=$(safe_replace "$prompt" "{{git_status}}" "$tok")
     local status_val
     status_val=$(safe_git status -s 2>/dev/null || echo "Not a git repo")
-    prompt=$(safe_replace "$prompt" "{{git_status}}" "$status_val")
+    tokens+=("$tok")
+    values+=("$status_val")
   fi
 
   if [[ "$prompt" == *"{{git_branch}}"* ]]; then
+    local tok="__${nonce}_GITBRANCH__"
+    prompt=$(safe_replace "$prompt" "{{git_branch}}" "$tok")
     local branch_val
     branch_val=$(safe_git branch --show-current 2>/dev/null || echo "no-branch")
-    prompt=$(safe_replace "$prompt" "{{git_branch}}" "$branch_val")
+    tokens+=("$tok")
+    values+=("$branch_val")
   fi
 
-  # 5. Scrollback context
+  # 4. Scrollback context
   if [[ "$prompt" == *"{{pane_logs:errors}}"* ]]; then
+    local tok="__${nonce}_PANELOGSERRORS__"
+    prompt=$(safe_replace "$prompt" "{{pane_logs:errors}}" "$tok")
+    local filtered_logs=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{pane_logs:errors}}" "[Target pane logs (Errors only)]")
+      filtered_logs="[Target pane logs (Errors only)]"
     else
       local logs
       logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 100)
       logs=$(echo "$logs" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
-      local filtered_logs
       filtered_logs=$(echo "$logs" | grep -i -B 3 -A 3 -E "error|fail|exception|fatal|panic")
       if [ -z "$filtered_logs" ]; then
         filtered_logs="No errors found in the last 100 lines of logs."
       fi
-      prompt=$(safe_replace "$prompt" "{{pane_logs:errors}}" "$filtered_logs")
     fi
+    tokens+=("$tok")
+    values+=("$filtered_logs")
   fi
 
   if [[ "$prompt" == *"{{pane_logs}}"* ]]; then
+    local tok="__${nonce}_PANELOGS__"
+    prompt=$(safe_replace "$prompt" "{{pane_logs}}" "$tok")
+    local logs_val=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{pane_logs}}" "[Target pane logs (last 100 lines)]")
+      logs_val="[Target pane logs (last 100 lines)]"
     else
       local logs
       logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 100)
       logs=$(echo "$logs" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
-      prompt=$(safe_replace "$prompt" "{{pane_logs}}" "$logs")
+      logs_val="$logs"
     fi
+    tokens+=("$tok")
+    values+=("$logs_val")
   fi
 
   if [[ "$prompt" == *"{{last_command}}"* ]]; then
+    local tok="__${nonce}_LASTCOMMAND__"
+    prompt=$(safe_replace "$prompt" "{{last_command}}" "$tok")
+    local cmd_val=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{last_command}}" "[Last executed command]")
+      cmd_val="[Last executed command]"
     else
       local logs
       logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 100)
       logs=$(echo "$logs" | sed -E 's/\x1B\][^\x07]*\x07//g; s/\x1B\[[0-9;]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g')
       local last_cmd=""
-      # shellcheck disable=SC2016
-      local prompt_symbols='(\$([[:space:]]+|$)|[%#\>❯➜▶▲│|])'
-      
       while IFS= read -r line || [ -n "$line" ]; do
         [[ "$line" =~ ^[[:space:]]*$ ]] && continue
         
-        # 1. Strip right-prompt (RPROMPT / timestamps) after multi-spaces
-        local line_clean
-        line_clean=$(echo "$line" | sed -E 's/[[:space:]]{2,}.*$//')
-        
         local cmd_candidate=""
-        # Case A: Standard prompt terminator ($ or % or #) with trailing space
-        if echo "$line_clean" | grep -q -E "(\\\$|%|#)[[:space:]]+"; then
-          cmd_candidate=$(echo "$line_clean" | sed -E 's/^[^\$#%]*[\$#%][[:space:]]+//')
-        # Case B: Unicode prompt terminators (❯, ▶)
-        elif echo "$line_clean" | grep -q -E "(❯|▶)[[:space:]]+"; then
-          cmd_candidate=$(echo "$line_clean" | sed -E 's/^[^❯▶]*(❯|▶)[[:space:]]+//')
-        # Case C: oh-my-zsh style: ➜  dir git:(main) ✗ cmd
-        elif echo "$line_clean" | grep -q -E "^➜[[:space:]]+.*git:\([^)]+\)[[:space:]]*[^[:space:]]*[[:space:]]+"; then
-          cmd_candidate=$(echo "$line_clean" | sed -E "s/^➜[[:space:]]+.*git:\([^)]+\)[[:space:]]*[^[:space:]]*[[:space:]]+//")
-        elif echo "$line_clean" | grep -q -E "^➜[[:space:]]+"; then
-          cmd_candidate=$(echo "$line_clean" | sed -E "s/^➜[[:space:]]+[^[:space:]]+[[:space:]]+//")
+        # Case A: oh-my-zsh style: ➜  dir git:(main) ✗ cmd
+        if echo "$line" | grep -q -E "^➜[[:space:]]+.*git:\([^)]+\)[[:space:]]*[^[:space:]]*[[:space:]]+"; then
+          cmd_candidate=$(echo "$line" | sed -E "s/^➜[[:space:]]+.*git:\([^)]+\)[[:space:]]*[^[:space:]]*[[:space:]]+//")
+        # Case B: oh-my-zsh simple: ➜  dir cmd
+        elif echo "$line" | grep -q -E "^➜[[:space:]]+"; then
+          cmd_candidate=$(echo "$line" | sed -E "s/^➜[[:space:]]+[^[:space:]]+[[:space:]]+//")
+        # Case C: Unicode prompt terminators (❯, ▶)
+        elif echo "$line" | grep -q -E "(❯|▶)[[:space:]]+"; then
+          cmd_candidate=$(echo "$line" | sed -E 's/^[^❯▶]*(❯|▶)[[:space:]]+//')
+        # Case D: Standard prompt terminator ($ or % or #) with trailing space
+        elif echo "$line" | grep -q -E "(\\\$|%|#)[[:space:]]+"; then
+          cmd_candidate=$(echo "$line" | sed -E 's/^[^\$#%]*[\$#%][[:space:]]+//')
         fi
+        
+        # Strip right-prompt (RPROMPT / timestamps separated by wide margin of 5+ spaces)
+        cmd_candidate=$(echo "$cmd_candidate" | sed -E 's/[[:space:]]{5,}.*$//')
         cmd_candidate=$(echo "$cmd_candidate" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
         
         if [ -n "$cmd_candidate" ]; then
@@ -749,20 +795,25 @@ resolve_placeholders() {
       done <<< "$(echo "$logs" | tail -n 50 | awk '{a[i++]=$0} END {for (j=i-1; j>=0; j--) print a[j]}')"
 
       if [ -n "$last_cmd" ]; then
-        prompt=$(safe_replace "$prompt" "{{last_command}}" "$last_cmd")
+        cmd_val="$last_cmd"
       else
         echo "Could not detect last command automatically." >&2
         echo "Enter the command manually (press Enter):" >&2
         read -r manual_cmd
-        prompt=$(safe_replace "$prompt" "{{last_command}}" "$manual_cmd")
+        cmd_val="$manual_cmd"
       fi
     fi
+    tokens+=("$tok")
+    values+=("$cmd_val")
   fi
 
-  # 6. Cross-pane referencing & Broadcast target
+  # 5. Cross-pane referencing & Broadcast target
   if [[ "$prompt" == *"{{panes:choose}}"* ]]; then
+    local tok="__${nonce}_PANESCHOOSE__"
+    prompt=$(safe_replace "$prompt" "{{panes:choose}}" "$tok")
+    local panes_val=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{panes:choose}}" "[Selected Broadcast Panes]")
+      panes_val="[Selected Broadcast Panes]"
     else
       local pane_options
       pane_options=$(mux_list_panes)
@@ -789,21 +840,26 @@ resolve_placeholders() {
             fi
             [ -n "$pid" ] && TARGET_PANES+=("$pid") && pane_labels="${pane_labels}${pid} "
           done <<< "$selected_panes_lines"
-          prompt=$(safe_replace "$prompt" "{{panes:choose}}" "${pane_labels}")
+          panes_val="${pane_labels}"
         else
           echo "Cancelled pane selection." >&2
           exit 0
         fi
       else
         echo "No other panes found." >&2
-        prompt=$(safe_replace "$prompt" "{{panes:choose}}" "No other panes")
+        panes_val="No other panes"
       fi
     fi
+    tokens+=("$tok")
+    values+=("$panes_val")
   fi
 
   if [[ "$prompt" == *"{{pane:choose}}"* ]]; then
+    local tok="__${nonce}_PANECHOOSE__"
+    prompt=$(safe_replace "$prompt" "{{pane:choose}}" "$tok")
+    local pane_val=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{pane:choose}}" "[Content of selected pane]")
+      pane_val="[Content of selected pane]"
     else
       local pane_options
       pane_options=$(mux_list_panes)
@@ -826,7 +882,7 @@ resolve_placeholders() {
           local imported_logs
           imported_logs=$(mux_read_pane_logs "$selected_pane_id" 100)
           imported_logs=$(echo "$imported_logs" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
-          prompt=$(safe_replace "$prompt" "{{pane:choose}}" "$imported_logs")
+          pane_val="$imported_logs"
           TARGET_PANES=("$selected_pane_id")
         else
           echo "Cancelled pane selection." >&2
@@ -834,46 +890,57 @@ resolve_placeholders() {
         fi
       else
         echo "No other panes found." >&2
-        prompt=$(safe_replace "$prompt" "{{pane:choose}}" "No other panes")
+        pane_val="No other panes"
       fi
     fi
+    tokens+=("$tok")
+    values+=("$pane_val")
   fi
 
-  # 7. Smart File truncation {{file:lines=START-END}}
-  if [[ "$prompt" =~ \{\{file:lines=([0-9]+)-([0-9]+)\}\} ]]; then
-    local start_line="${BASH_REMATCH[1]}"
-    local end_line="${BASH_REMATCH[2]}"
-    
-    if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{file:lines=${start_line}-${end_line}}}" "[Content of selected file (lines ${start_line}-${end_line})]")
-    else
-      local file_path=""
-      if safe_git rev-parse --is-inside-work-tree &>/dev/null; then
-        local git_root
-        git_root=$(safe_git rev-parse --show-toplevel)
-        file_path=$(cd "$git_root" && (safe_git status -s | cut -c4-; safe_git ls-files) | sort -u | fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):")
-        if [ -n "$file_path" ]; then
-          file_path="${git_root}/${file_path}"
+  # 6. Smart File truncation {{file:lines=START-END}}
+  local file_lines_matches
+  file_lines_matches=$(echo "$prompt" | grep -oE "\{\{file:lines=[0-9]+-[0-9]+\}\}" | sort -u)
+  for flm in $file_lines_matches; do
+    if [[ "$flm" =~ \{\{file:lines=([0-9]+)-([0-9]+)\}\} ]]; then
+      local start_line="${BASH_REMATCH[1]}"
+      local end_line="${BASH_REMATCH[2]}"
+      local tok="__${nonce}_FILELINES_${start_line}_${end_line}__"
+      prompt=$(safe_replace "$prompt" "$flm" "$tok")
+      local fl_val=""
+      if [ "$is_preview" == "true" ]; then
+        fl_val="[Content of selected file (lines ${start_line}-${end_line})]"
+      else
+        local file_path=""
+        if safe_git rev-parse --is-inside-work-tree &>/dev/null; then
+          local git_root
+          git_root=$(safe_git rev-parse --show-toplevel)
+          file_path=$(cd "$git_root" && (safe_git status -s | cut -c4-; safe_git ls-files) | sort -u | fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):")
+          if [ -n "$file_path" ]; then
+            file_path="${git_root}/${file_path}"
+          fi
+        else
+          file_path=$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||' | fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):")
         fi
-      else
-        file_path=$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||' | fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):")
+        
+        if [ -n "$file_path" ] && [ -f "$file_path" ]; then
+          fl_val=$(sed -n "${start_line},${end_line}p" "$file_path")
+        else
+          echo "Cancelled file selection." >&2
+          exit 0
+        fi
       fi
-      
-      if [ -n "$file_path" ] && [ -f "$file_path" ]; then
-        local file_content
-        file_content=$(sed -n "${start_line},${end_line}p" "$file_path")
-        prompt=$(safe_replace "$prompt" "{{file:lines=${start_line}-${end_line}}}" "$file_content")
-      else
-        echo "Cancelled file selection." >&2
-        exit 0
-      fi
+      tokens+=("$tok")
+      values+=("$fl_val")
     fi
-  fi
+  done
 
-  # Legacy File placeholder
+  # 7. File Content placeholder {{file}}
   if [[ "$prompt" == *"{{file}}"* ]]; then
+    local tok="__${nonce}_FILE__"
+    prompt=$(safe_replace "$prompt" "{{file}}" "$tok")
+    local file_val=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{file}}" "[Content of selected file]")
+      file_val="[Content of selected file]"
     else
       local file_path=""
       if safe_git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -888,22 +955,25 @@ resolve_placeholders() {
       fi
       
       if [ -n "$file_path" ] && [ -f "$file_path" ]; then
-        local file_content
-        file_content=$(cat "$file_path")
-        prompt=$(safe_replace "$prompt" "{{file}}" "$file_content")
+        file_val=$(cat "$file_path")
       else
         echo "Cancelled file selection." >&2
         exit 0
       fi
     fi
+    tokens+=("$tok")
+    values+=("$file_val")
   fi
 
-  # File Path placeholder {{file_path}}, {{filepath}}, {{file:path}}
+  # 8. File Path placeholder {{file_path}}, {{filepath}}, {{file:path}}
   if [[ "$prompt" == *"{{file_path}}"* ]] || [[ "$prompt" == *"{{filepath}}"* ]] || [[ "$prompt" == *"{{file:path}}"* ]]; then
+    local tok="__${nonce}_FILEPATH__"
+    prompt=$(safe_replace "$prompt" "{{file_path}}" "$tok")
+    prompt=$(safe_replace "$prompt" "{{filepath}}" "$tok")
+    prompt=$(safe_replace "$prompt" "{{file:path}}" "$tok")
+    local path_val=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{file_path}}" "[Path of selected file]")
-      prompt=$(safe_replace "$prompt" "{{filepath}}" "[Path of selected file]")
-      prompt=$(safe_replace "$prompt" "{{file:path}}" "[Path of selected file]")
+      path_val="[Path of selected file]"
     else
       local file_path=""
       if safe_git rev-parse --is-inside-work-tree &>/dev/null; then
@@ -915,20 +985,23 @@ resolve_placeholders() {
       fi
       
       if [ -n "$file_path" ]; then
-        prompt=$(safe_replace "$prompt" "{{file_path}}" "$file_path")
-        prompt=$(safe_replace "$prompt" "{{filepath}}" "$file_path")
-        prompt=$(safe_replace "$prompt" "{{file:path}}" "$file_path")
+        path_val="$file_path"
       else
         echo "Cancelled file selection." >&2
         exit 0
       fi
     fi
+    tokens+=("$tok")
+    values+=("$path_val")
   fi
 
-  # 8. {{error}}
+  # 9. {{error}}
   if [[ "$prompt" == *"{{error}}"* ]]; then
+    local tok="__${nonce}_ERROR__"
+    prompt=$(safe_replace "$prompt" "{{error}}" "$tok")
+    local error_val=""
     if [ "$is_preview" == "true" ]; then
-      prompt=$(safe_replace "$prompt" "{{error}}" "[Recent target pane error logs]")
+      error_val="[Recent target pane error logs]"
     else
       local pane_logs
       pane_logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 50)
@@ -940,21 +1013,31 @@ resolve_placeholders() {
         if [ -z "$err_info" ]; then
           err_info="No explicit errors (error/fail/panic/exception) detected in the last 50 lines."
         fi
-        prompt=$(safe_replace "$prompt" "{{error}}" "$err_info")
+        error_val="$err_info"
       else
         echo "Could not read terminal output automatically." >&2
         echo "Enter the error message manually (press Ctrl+D when finished):" >&2
         local manual_error
         manual_error=$(cat)
-        prompt=$(safe_replace "$prompt" "{{error}}" "$manual_error")
+        error_val="$manual_error"
       fi
     fi
+    tokens+=("$tok")
+    values+=("$error_val")
   fi
 
-  # 9. {{selected}} (Resolved last to prevent code/clipboard contents from triggering subsequent placeholder expansions)
+  # 10. {{selected}}
   if [[ "$prompt" == *"{{selected}}"* ]]; then
-    prompt=$(safe_replace "$prompt" "{{selected}}" "$SELECTED_TEXT")
+    local tok="__${nonce}_SELECTED__"
+    prompt=$(safe_replace "$prompt" "{{selected}}" "$tok")
+    tokens+=("$tok")
+    values+=("$SELECTED_TEXT")
   fi
+
+  # 11. Final token replacement (single-pass non-recursive resolution)
+  for i in "${!tokens[@]}"; do
+    prompt=$(safe_replace "$prompt" "${tokens[$i]}" "${values[$i]}")
+  done
 
   RESOLVED_PROMPT="$prompt"
 }
@@ -986,7 +1069,7 @@ fi
 
 # --- Handle Preview Mode ---
 if [ "$1" == "--preview-only" ]; then
-  SELECTED_TITLE="$2"
+  SELECTED_TITLE=$(printf '%s' "$2" | tr -d '\r')
   CONTEXT_JSON="${3:-$HERDR_PLUGIN_CONTEXT_JSON}"
   
   # Parse context for preview

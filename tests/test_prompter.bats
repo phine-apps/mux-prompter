@@ -807,3 +807,137 @@ EOF
   [[ "$output" == *"Tab Title Test"* ]]
   [[ "$output" != *"Tab	Title"* ]]
 }
+
+@test "ADV-16: Git diff containing placeholder syntax ({{selected}}, {{error}}) is not secondarily expanded" {
+  mkdir -p "$MOCK_CONFIG_DIR/templates"
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/diff-only.md"
+# Diff Only
+Here is diff:
+{{git_diff}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  echo 'console.log("{{selected}} and {{error}}");' > uncommitted_test.txt
+  git add uncommitted_test.txt
+  git commit -m "add test" -q &>/dev/null
+  echo 'console.log("modified {{selected}} and {{error}}");' > uncommitted_test.txt
+
+  INJECTION_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\", \"selected_text\": \"PWNED_CLIPBOARD\"}"
+  run bash "$PROMPTER_SCRIPT" --preview-only "Diff Only" "$INJECTION_CONTEXT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"modified {{selected}} and {{error}}"* ]]
+  [[ "$output" != *"PWNED_CLIPBOARD"* ]]
+  [[ "$output" != *"[Recent target pane error logs]"* ]]
+}
+
+@test "ADV-17: save_to_history preserves literal escaped newlines without syntax corruption upon restore" {
+  TEMP_CONFIG_DIR="$TEST_TEMP_DIR/temp_config_adv17"
+  mkdir -p "$TEMP_CONFIG_DIR"
+  export HERDR_PLUGIN_CONFIG_DIR="$TEMP_CONFIG_DIR"
+  
+  run bash -c "
+    HISTORY_FILE='$TEMP_CONFIG_DIR/prompter_history.txt'
+    eval \"\$(sed -n '/^save_to_history() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    eval \"\$(sed -n '/^decode_literal_newlines() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    
+    ORIGINAL_PROMPT=\$(cat << 'EOF'
+Fix this C code:
+printf(\"Line 1\\nLine 2\\n\");
+EOF
+)
+    save_to_history \"\$ORIGINAL_PROMPT\"
+    saved_line=\$(cat \"\$HISTORY_FILE\")
+    RESTORED=\$(decode_literal_newlines \"\$saved_line\")
+    
+    if [ \"\$RESTORED\" = \"\$ORIGINAL_PROMPT\" ]; then
+      echo \"MATCH\"
+    else
+      echo \"MISMATCH\"
+      echo \"\$RESTORED\"
+      exit 1
+    fi
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"MATCH"* ]]
+}
+
+@test "ADV-18: {{last_command}} preserves internal double spaces and handles multi-space prompts" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/last-cmd-spaces.md"
+# Last Cmd Spaces
+Command: {{last_command}}
+EOF
+
+  # Test Case 1: Internal double space (e.g. commit message)
+  run bash -c "
+    TARGET_PANE_ID='%1'
+    mux_read_pane_logs() {
+      echo 'user@box:~$ git commit -m \"feat:  add feature\"'
+    }
+    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Command: {{last_command}}' 'false'
+    echo \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = 'Command: git commit -m "feat:  add feature"' ]
+
+  # Test Case 2: Multi-space after prompt terminator
+  run bash -c "
+    TARGET_PANE_ID='%1'
+    mux_read_pane_logs() {
+      echo 'user@box:~$  ls -la'
+    }
+    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Command: {{last_command}}' 'false'
+    echo \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = 'Command: ls -la' ]
+
+  # Test Case 3: oh-my-zsh prompt with RPROMPT margin
+  run bash -c "
+    TARGET_PANE_ID='%1'
+    mux_read_pane_logs() {
+      echo '➜  dir git:(main) ✗ git status        10:00'
+    }
+    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Command: {{last_command}}' 'false'
+    echo \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = 'Command: git status' ]
+}
+
+@test "ADV-19: Multiple {{file:lines=START-END}} placeholders in a single template are all resolved" {
+  mkdir -p "$MOCK_CONFIG_DIR/templates"
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/multi-file-lines.md"
+# Multi File Lines
+Part 1:
+{{file:lines=1-2}}
+Part 2:
+{{file:lines=4-5}}
+EOF
+
+  run bash "$PROMPTER_SCRIPT" --preview-only "Multi File Lines"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"lines 1-2"* ]]
+  [[ "$output" == *"lines 4-5"* ]]
+  [[ "$output" != *"{{file:lines"* ]]
+}
+
+@test "ADV-20: CRLF templates are sanitized and correctly loaded without carriage return corruption" {
+  mkdir -p "$MOCK_CONFIG_DIR/templates"
+  printf "# CRLF Template\r\nBody with CRLF line 1\r\nBody line 2\r\n" > "$MOCK_CONFIG_DIR/templates/crlf-test.md"
+
+  run bash "$PROMPTER_SCRIPT" --list-templates
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"CRLF Template"* ]]
+
+  run bash "$PROMPTER_SCRIPT" --preview-only "CRLF Template"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Body with CRLF line 1"* ]]
+  [[ "$output" != *"No template found."* ]]
+}
+
