@@ -26,12 +26,11 @@ First off, thank you for considering contributing to Mux Prompter!
 
 1. **Clone the repository.**
 2. **Ensure Prerequisites are installed:**
-   Ensure you have `fzf` and `jq` installed locally.
+   Ensure you have `fzf`, `jq`, and `bats` ([bats-core](https://github.com/bats-core/bats-core)) installed locally.
 3. **Run Tests:**
-   You can run the mock test suite using:
+   You can run the Bats test suite using:
    ```bash
-   cd tests
-   bash test_prompter.sh
+   bats tests/test_prompter.bats
    ```
 4. **Test with Herdr locally:**
    Link your local repository path directly to your Herdr workspace manager:

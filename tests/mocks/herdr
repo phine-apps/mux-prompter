@@ -10,7 +10,7 @@ if [ "$1" == "pane" ] && [ "$2" == "read" ]; then
 fi
 
 if [ "$1" == "pane" ] && [ "$2" == "list" ]; then
-  echo '{"id":"cli:pane:list","result":{"panes":[{"agent_status":"unknown","cwd":"/Users/oishik","focused":false,"foreground_cwd":"/Users/oishik","pane_id":"w2:p1","revision":0,"tab_id":"w2:t1","terminal_id":"term_1","workspace_id":"w2"},{"agent_status":"unknown","cwd":"/Users/oishik/apps/herdr-prompter","focused":true,"foreground_cwd":"/Users/oishik/apps/herdr-prompter","label":"Prompter UI","pane_id":"w2:p2","revision":0,"tab_id":"w2:t1","terminal_id":"term_2","workspace_id":"w2"},{"agent_status":"unknown","cwd":"/Users/oishik/apps/herdr-prompter","focused":false,"foreground_cwd":"/Users/oishik/apps/herdr-prompter","label":"Other Pane","pane_id":"w2:p3","revision":0,"tab_id":"w2:t1","terminal_id":"term_3","workspace_id":"w2"}]},"type":"pane_list"}'
+  echo '{"id":"cli:pane:list","result":{"panes":[{"agent_status":"unknown","cwd":"/mock/home","focused":false,"foreground_cwd":"/mock/home","pane_id":"w2:p1","revision":0,"tab_id":"w2:t1","terminal_id":"term_1","workspace_id":"w2"},{"agent_status":"unknown","cwd":"/mock/apps/mux-prompter","focused":true,"foreground_cwd":"/mock/apps/mux-prompter","label":"Prompter UI","pane_id":"w2:p2","revision":0,"tab_id":"w2:t1","terminal_id":"term_2","workspace_id":"w2"},{"agent_status":"unknown","cwd":"/mock/apps/mux-prompter","focused":false,"foreground_cwd":"/mock/apps/mux-prompter","label":"Other Pane","pane_id":"w2:p3","revision":0,"tab_id":"w2:t1","terminal_id":"term_3","workspace_id":"w2"}]},"type":"pane_list"}'
   exit 0
 fi
 
