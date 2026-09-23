@@ -537,9 +537,11 @@ load_history_options() {
       # Skip empty lines or lines with only whitespace
       [[ "$line" =~ ^[[:space:]]*$ ]] && continue
       # Replace literal \n with space for a clean display title
-      local clean_disp
-      clean_disp=$(echo "$line" | sed 's/\\n/ /g' | cut -c1-30)
-      printf '📜 %s...\t%s\n' "$clean_disp" "$line"
+      local clean_disp="${line//\\n/ }"
+      if [ "${#clean_disp}" -gt 30 ]; then
+        clean_disp="${clean_disp:0:30}..."
+      fi
+      printf '📜 %s\t%s\n' "$clean_disp" "$line"
     done < "$HISTORY_FILE"
   fi
 }
@@ -776,14 +778,16 @@ resolve_placeholders() {
         # Case B: oh-my-zsh simple: ➜  dir cmd
         elif echo "$line" | grep -q -E "^➜[[:space:]]+"; then
           cmd_candidate=$(echo "$line" | sed -E "s/^➜[[:space:]]+[^[:space:]]+[[:space:]]+//")
-        # Case C: Unicode prompt terminators (❯, ▶)
-        elif echo "$line" | grep -q -E "(❯|▶)[[:space:]]+"; then
-          cmd_candidate=$(echo "$line" | sed -E 's/^[^❯▶]*(❯|▶)[[:space:]]+//')
+        # Case C: Unicode prompt terminators (❯, ▶, )
+        elif echo "$line" | grep -q -E "(❯|▶|)[[:space:]]+"; then
+          cmd_candidate=$(echo "$line" | sed -E 's/^.*(❯|▶|)[[:space:]]+//')
         # Case D: Standard prompt terminator ($ or % or #) with trailing space
         elif echo "$line" | grep -q -E "(\\\$|%|#)[[:space:]]+"; then
           cmd_candidate=$(echo "$line" | sed -E 's/^[^\$#%]*[\$#%][[:space:]]+//')
         fi
         
+        # Strip Powerline right-prompt ()
+        cmd_candidate=$(echo "$cmd_candidate" | sed -E 's/[[:space:]]*.*$//')
         # Strip right-prompt (RPROMPT / timestamps separated by wide margin of 5+ spaces)
         cmd_candidate=$(echo "$cmd_candidate" | sed -E 's/[[:space:]]{5,}.*$//')
         cmd_candidate=$(echo "$cmd_candidate" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')
@@ -792,7 +796,7 @@ resolve_placeholders() {
           last_cmd="$cmd_candidate"
           break
         fi
-      done <<< "$(echo "$logs" | tail -n 50 | awk '{a[i++]=$0} END {for (j=i-1; j>=0; j--) print a[j]}')"
+      done <<< "$(echo "$logs" | tail -n 100 | awk '{a[i++]=$0} END {for (j=i-1; j>=0; j--) print a[j]}')"
 
       if [ -n "$last_cmd" ]; then
         cmd_val="$last_cmd"

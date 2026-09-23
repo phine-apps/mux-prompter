@@ -27,6 +27,7 @@ setup() {
   export HERDR_BIN_PATH="herdr"
   export TMUX_BIN_PATH="tmux"
   export HERDR_PLUGIN_CONFIG_DIR="$MOCK_CONFIG_DIR"
+  unset TMUX
 
   # Write initial templates to the mock config directory
   write_templates
@@ -940,4 +941,79 @@ EOF
   [[ "$output" == *"Body with CRLF line 1"* ]]
   [[ "$output" != *"No template found."* ]]
 }
+
+@test "ADV-21: History display title truncates with ellipsis only when exceeding 30 characters" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/prompter_history.txt"
+short prompt
+123456789012345678901234567890
+1234567890123456789012345678901
+multi\nline\nprompt
+EOF
+
+  run bash "$PROMPTER_SCRIPT" --list-history
+  [ "$status" -eq 0 ]
+  # Short line (12 chars): no ellipsis
+  [[ "$output" == *"📜 short prompt	short prompt"* ]]
+  # Exactly 30 chars: no ellipsis
+  [[ "$output" == *"📜 123456789012345678901234567890	123456789012345678901234567890"* ]]
+  # Exceeding 30 chars (31 chars): truncated with ellipsis
+  [[ "$output" == *"📜 123456789012345678901234567890...	1234567890123456789012345678901"* ]]
+  # Multi-line short (flattened to 17 chars): no ellipsis
+  [[ "$output" == *"📜 multi line prompt	multi\nline\nprompt"* ]]
+}
+
+@test "ADV-22: {{last_command}} detects commands in Powerlevel9k/Powerline (/) and multi-arrow prompts" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/last-cmd-powerline.md"
+# Last Cmd Powerline
+Command: {{last_command}}
+EOF
+
+  # Test Case 1: Powerlevel9k prompt with  and RPROMPT 
+  run bash -c "
+    TARGET_PANE_ID='%1'
+    mux_read_pane_logs() {
+      echo 'user@box  ~/apps   main ● ?  ls   ✔  10128  10:33:42'
+      echo 'user@box  ~/apps   main ● ?  '
+    }
+    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Command: {{last_command}}' 'false'
+    echo \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = 'Command: ls' ]
+
+  # Test Case 2: Prezto sorin theme with ❯❯❯
+  run bash -c "
+    TARGET_PANE_ID='%1'
+    mux_read_pane_logs() {
+      echo '~/dir ❯❯❯ git status'
+      echo '~/dir ❯❯❯ '
+    }
+    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Command: {{last_command}}' 'false'
+    echo \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = 'Command: git status' ]
+
+  # Test Case 3: Powerlevel9k prompt executing echo \" \"
+  run bash -c "
+    TARGET_PANE_ID='%1'
+    mux_read_pane_logs() {
+      echo 'user@box  ~/apps  echo \" \"'
+      echo ' '
+      echo 'user@box  ~/apps  '
+    }
+    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Command: {{last_command}}' 'false'
+    echo \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = 'Command: echo " "' ]
+}
+
+
 
