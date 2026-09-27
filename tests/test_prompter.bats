@@ -443,7 +443,7 @@ EOF
   }
   export -f command
 
-  run bash "$PROMPTER_SCRIPT"
+  run bash -c "bash '$PROMPTER_SCRIPT' < /dev/null"
   [ "$status" -ne 0 ] || [[ "$output" == *"is required"* ]]
 }
 
@@ -1014,6 +1014,110 @@ EOF
   [ "$status" -eq 0 ]
   [ "$output" = 'Command: echo " "' ]
 }
+
+@test "ADV-23: {{pane:choose}} preserves caller target pane when importing logs" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/crosspane-target.md"
+# Crosspane Target Test
+Logs from other pane:
+{{pane:choose}}
+EOF
+  export TEST_STAGE="crosspane"
+  export MUX_BACKEND="tmux"
+  export TMUX_PANE="%0"
+  export PROMPTER_CALLER_PANE="%0"
+  rm -f "$MOCK_LOG_DIR"/*.log
+
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  # Ensure the injected text was sent to caller pane %0, not imported pane %1
+  [[ "$(cat "$MOCK_LOG_DIR/tmux_calls.log")" == *"send-keys -t %0"* ]]
+  [[ "$(cat "$MOCK_LOG_DIR/tmux_calls.log")" != *"send-keys -t %1"* ]]
+}
+
+@test "ADV-24: Git file listing uses ls-files to avoid renamed or deleted file artifacts" {
+  cd "$MOCK_GIT_DIR" || exit 1
+  # Rename a file and delete another
+  echo "content a" > file_a.txt
+  git add file_a.txt
+  git commit -m "add a" -q &>/dev/null
+  git mv file_a.txt file_renamed.txt
+  
+  echo "content b" > file_to_delete.txt
+  git add file_to_delete.txt
+  git commit -m "add b" -q &>/dev/null
+  git rm file_to_delete.txt -q &>/dev/null
+
+  echo "untracked" > untracked_file.txt
+
+  run bash -c "
+    eval \"\$(sed -n '/^safe_git() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    git_root=\$(safe_git rev-parse --show-toplevel)
+    file_list=\$(cd \"\$git_root\" && (safe_git ls-files; safe_git ls-files --others --exclude-standard) | sort -u)
+    echo \"\$file_list\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"file_renamed.txt"* ]]
+  [[ "$output" == *"untracked_file.txt"* ]]
+  [[ "$output" != *"->"* ]]
+  [[ "$output" != *"file_to_delete.txt"* ]]
+}
+
+@test "ADV-25: {{last_command}} does not falsely extract from percentage lines (e.g. 100% complete)" {
+  run bash -c "
+    TARGET_PANE_ID='%1'
+    mux_read_pane_logs() {
+      echo 'user@box:~$ npm test'
+      echo 'Progress: 100% complete'
+      echo 'Fetch: 85% done'
+    }
+    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Ran: {{last_command}}' 'false'
+    echo \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = 'Ran: npm test' ]
+}
+
+@test "ADV-26: save_to_history uses PID-based temporary file to avoid race collisions" {
+  TEMP_CONFIG_DIR="$TEST_TEMP_DIR/temp_config_adv26"
+  mkdir -p "$TEMP_CONFIG_DIR"
+  export HERDR_PLUGIN_CONFIG_DIR="$TEMP_CONFIG_DIR"
+
+  run bash -c "
+    HISTORY_FILE='$TEMP_CONFIG_DIR/prompter_history.txt'
+    eval \"\$(sed -n '/^save_to_history() {/,/^}/p' '$PROMPTER_SCRIPT')\"
+    save_to_history 'test race-free prompt'
+    [ -f \"\$HISTORY_FILE\" ] && echo 'FILE_CREATED'
+    [ ! -f \"\${HISTORY_FILE}.tmp\" ] && echo 'NO_STATIC_TMP'
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"FILE_CREATED"* ]]
+  [[ "$output" == *"NO_STATIC_TMP"* ]]
+}
+
+@test "ADV-27: prompter.tmux correctly quotes prompter script path in tmux bindings" {
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_TMUX"
+  [ "$status" -eq 0 ]
+  # Check that path is surrounded by quotes
+  [[ "$(cat "$MOCK_LOG_DIR/tmux_calls.log")" == *'"'*'prompter.sh"'* ]]
+}
+
+@test "ADV-28: Template editor invocation safely escapes file path against command injection" {
+  run bash -c "
+    target_edit_file='/tmp/test\"\\\$(echo pwned)\".md'
+    MY_EDITOR='echo'
+    escaped_target_file=\$(printf '%q' \"\$target_edit_file\")
+    out=\$(eval \"\$MY_EDITOR \\\"\\\$escaped_target_file\\\"\")
+    echo \"OUTPUT: \$out\"
+  "
+  [ "$status" -eq 0 ]
+  # Ensure the subshell \$(echo pwned) was NOT executed and remains literal
+  [[ "$output" == *'OUTPUT: /tmp/test"$(echo pwned)".md'* ]]
+  [[ "$output" != *"OUTPUT: /tmp/testpwned.md"* ]]
+}
+
 
 
 
