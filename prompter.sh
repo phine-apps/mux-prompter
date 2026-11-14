@@ -1335,7 +1335,7 @@ resolve_placeholders() {
             file_path="${git_root}/${file_path}"
           fi
         else
-          file_path=$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||' | fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):")
+          file_path=$(fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):" <<< "$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||')")
         fi
         
         if [ -n "$file_path" ] && [ -f "$file_path" ]; then
@@ -1367,7 +1367,7 @@ resolve_placeholders() {
           file_path="${git_root}/${file_path}"
         fi
       else
-        file_path=$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||' | fzf --layout=reverse --header="Select a file to insert:")
+        file_path=$(fzf --layout=reverse --header="Select a file to insert:" <<< "$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||')")
       fi
       
       if [ -n "$file_path" ] && [ -f "$file_path" ]; then
@@ -1397,7 +1397,7 @@ resolve_placeholders() {
         git_root=$(safe_git rev-parse --show-toplevel)
         file_path=$(cd "$git_root" && (safe_git status -s | cut -c4-; safe_git ls-files) | sort -u | fzf --layout=reverse --header="Select a file to insert path:")
       else
-        file_path=$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||' | fzf --layout=reverse --header="Select a file to insert path:")
+        file_path=$(fzf --layout=reverse --header="Select a file to insert path:" <<< "$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||')")
       fi
       
       if [ -n "$file_path" ]; then
@@ -1462,7 +1462,7 @@ resolve_placeholders() {
 if [ "$1" == "--list-templates" ]; then
   load_templates
   for title in "${TEMPLATES_TITLES[@]}"; do
-    echo "$title"
+    [ -n "$title" ] && echo "$title"
   done
   echo "🔧 Edit Templates"
   exit 0
@@ -1477,7 +1477,7 @@ if [ "$1" == "--list-all" ]; then
   load_history_options
   load_templates
   for title in "${TEMPLATES_TITLES[@]}"; do
-    echo "$title"
+    [ -n "$title" ] && echo "$title"
   done
   echo "🔧 Edit Templates"
   exit 0
@@ -1567,9 +1567,17 @@ export SCRIPT_PATH
 while true; do
   load_templates
 
+  # Build initial options in memory so SIGPIPE-ignored parents do not emit Broken pipe
+  # if fzf exits before an upstream sed/subprocess pipe finishes flushing.
+  initial_options=""
+  for title in "${TEMPLATES_TITLES[@]}"; do
+    [ -n "$title" ] && initial_options+="${title}"$'\n'
+  done
+  initial_options+="🔧 Edit Templates"
+
   # Run fzf with preview panel enabled and dynamic reload binding
   # Default view: Templates
-  SELECTED_OPTION=$(bash "$SCRIPT_PATH" --list-templates | sed '/^$/d' | fzf \
+  SELECTED_OPTION=$(fzf \
     --header="[Ctrl-T] Templates  |  [Ctrl-R] History  |  [Ctrl-A] All Options" \
     --prompt="Templates> " \
     --layout=reverse \
@@ -1579,7 +1587,7 @@ while true; do
     --preview-window=right:50%:wrap \
     --bind "ctrl-r:reload(bash \"$SCRIPT_PATH\" --list-history)+change-prompt(History> )" \
     --bind "ctrl-t:reload(bash \"$SCRIPT_PATH\" --list-templates)+change-prompt(Templates> )" \
-    --bind "ctrl-a:reload(bash \"$SCRIPT_PATH\" --list-all)+change-prompt(All> )")
+    --bind "ctrl-a:reload(bash \"$SCRIPT_PATH\" --list-all)+change-prompt(All> )" <<< "$initial_options")
 
   if [ -z "$SELECTED_OPTION" ]; then
     exit 0

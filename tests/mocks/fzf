@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 args="$*"
 
+# Drain stdin upfront when piped so upstream commands do not receive EPIPE
+# under CI runners where SIGPIPE is ignored (SIG_IGN).
+stdin_data=""
+if [ ! -t 0 ]; then
+  stdin_data=$(cat)
+fi
+
+pick_from_stdin() {
+  local match_pattern="$1"
+  local line
+  if [ -n "$match_pattern" ]; then
+    grep -m 1 "$match_pattern" <<< "$stdin_data" || true
+  else
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ]; then
+        echo "$line"
+        return 0
+      fi
+    done <<< "$stdin_data"
+  fi
+}
+
 if [ -n "$MOCK_LOG_DIR" ]; then
   echo "fzf $*" >> "$MOCK_LOG_DIR/fzf_calls.log"
 fi
@@ -95,16 +117,7 @@ if [[ "$args" == *"Select a git worktree:"* ]]; then
   if [ "$TEST_STAGE" == "cancel_worktree" ]; then
     exit 130
   fi
-  if [ -n "$MOCK_WORKTREE_MATCH" ]; then
-    grep -m 1 "$MOCK_WORKTREE_MATCH" || true
-  else
-    while IFS= read -r line || [ -n "$line" ]; do
-      if [ -n "$line" ]; then
-        echo "$line"
-        exit 0
-      fi
-    done
-  fi
+  pick_from_stdin "$MOCK_WORKTREE_MATCH"
   exit 0
 fi
 
@@ -113,16 +126,7 @@ if [[ "$args" == *"Select a git commit:"* ]]; then
   if [ "$TEST_STAGE" == "cancel_commit" ]; then
     exit 130
   fi
-  if [ -n "$MOCK_COMMIT_MATCH" ]; then
-    grep -m 1 "$MOCK_COMMIT_MATCH" || true
-  else
-    while IFS= read -r line || [ -n "$line" ]; do
-      if [ -n "$line" ]; then
-        echo "$line"
-        exit 0
-      fi
-    done
-  fi
+  pick_from_stdin "$MOCK_COMMIT_MATCH"
   exit 0
 fi
 
@@ -131,16 +135,7 @@ if [[ "$args" == *"Select a git branch:"* ]]; then
   if [ "$TEST_STAGE" == "cancel_branch" ]; then
     exit 130
   fi
-  if [ -n "$MOCK_BRANCH_MATCH" ]; then
-    grep -m 1 "$MOCK_BRANCH_MATCH" || true
-  else
-    while IFS= read -r line || [ -n "$line" ]; do
-      if [ -n "$line" ]; then
-        echo "$line"
-        exit 0
-      fi
-    done
-  fi
+  pick_from_stdin "$MOCK_BRANCH_MATCH"
   exit 0
 fi
 
@@ -149,16 +144,7 @@ if [[ "$args" == *"Select a changed file:"* ]]; then
   if [ "$TEST_STAGE" == "cancel_changed_file" ]; then
     exit 130
   fi
-  if [ -n "$MOCK_CHANGED_FILE_MATCH" ]; then
-    grep -m 1 "$MOCK_CHANGED_FILE_MATCH" || true
-  else
-    while IFS= read -r line || [ -n "$line" ]; do
-      if [ -n "$line" ]; then
-        echo "$line"
-        exit 0
-      fi
-    done
-  fi
+  pick_from_stdin "$MOCK_CHANGED_FILE_MATCH"
   exit 0
 fi
 
@@ -166,7 +152,7 @@ fi
 options=()
 while IFS= read -r line || [ -n "$line" ]; do
   options+=("$line")
-done
+done <<< "$stdin_data"
 for opt in "${options[@]}"; do
   clean_opt=$(echo "$opt" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
   if [ -n "$clean_opt" ]; then
