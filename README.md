@@ -189,17 +189,22 @@ You can use any of the following placeholders inside your prompt templates:
 | Placeholder            | Description                                          | Example Output                  |
 | :--------------------- | :--------------------------------------------------- | :------------------------------ |
 | `{{selected}}`         | Currently selected text/code block in Herdr          | _(Selected code block)_         |
-| `{{pane_logs}}`        | Last 100 lines of scrollback buffer from active pane | Terminal output                 |
+| `{{pane_logs}}`        | Last 100 lines of cleaned scrollback from active pane | Terminal output                 |
+| `{{pane_logs:lines=N}}` | Last `N` lines of cleaned scrollback from active pane | Recent `N` lines of output     |
 | `{{pane_logs:errors}}` | Extracts error/warning lines from last 100 lines     | `Error: Connection refused`     |
 | `{{last_command}}`     | Automatically parses the last executed shell command | `npm test` or `cat > /dev/null` |
 | `{{error}}`            | Scans scrollback logs for recent errors/exceptions   | Stacktrace or panic log         |
+
+> **Note on TUI panes (`agy`, `claude`, `vim`, etc.)**: `{{pane_logs}}` reads the scrollback/screen of the *active* pane, so full-screen or fixed-header TUI apps will include their own UI chrome. When composing prompts inside an AI TUI pane, prefer `{{pane:choose}}` or `{{pane:choose:errors}}` to pull logs from another terminal pane.
 
 ### 🎯 Interactive Inputs & Choosers
 
 | Placeholder           | Description                          | Behavior                                                                    |
 | :-------------------- | :----------------------------------- | :-------------------------------------------------------------------------- |
-| `{{pane:choose}}`     | Pick another pane in your workspace  | `fzf` opens showing `Tab X \| Pane ID (dir)`. Imports log of selected pane. |
-| `{{panes:choose}}`    | Pick multiple panes for broadcasting | Multi-select `fzf` list to target multiple panes.                           |
+| `{{pane:choose}}`     | Pick another pane (with live log preview) | `fzf` opens showing panes and live logs (current pane marked `[current]`). Imports cleaned logs of selected pane. |
+| `{{pane:choose:lines=N}}` | Pick another pane with custom line count | `fzf` opens with live preview and imports the last `N` cleaned lines.       |
+| `{{pane:choose:errors}}` | Pick another pane and extract errors | `fzf` opens with live preview and extracts error excerpts from the selected pane. |
+| `{{panes:choose}}`    | Pick multiple panes for broadcasting | Multi-select `fzf` list (with live preview) to target multiple panes.       |
 | `{{file}}`            | Pick a file from repository          | `fzf` opens to select a file. Injects **full contents** of the file.        |
 | `{{file_path}}`       | Pick a file from repository          | `fzf` opens to select a file. Injects **relative path** of the file.        |
 | `{{file:lines=1-20}}` | Truncate specific lines from a file  | Injects lines 1 to 20 from selected file.                                   |
@@ -283,9 +288,9 @@ Mux Prompter natively supports **[Herdr](https://herdr.dev)**, **[tmux](https://
 ### Automatic Detection
 
 By default, Mux Prompter automatically detects which terminal multiplexer environment is currently active:
+- **`herdr`**: Detected first when `$HERDR_PLUGIN_CONTEXT_JSON` is present (even if `$TMUX` or `$ZELLIJ` is inherited from a parent shell).
 - **`tmux`**: Detected when running inside a `tmux` session (`$TMUX` environment variable is set) or when `tmux` CLI responds.
 - **`zellij`**: Detected when running inside a `zellij` session (`$ZELLIJ` or `$ZELLIJ_SESSION_NAME` is set).
-- **`herdr`**: Detected when `$HERDR_PLUGIN_CONTEXT_JSON` is present or running as a Herdr plugin entrypoint.
 
 ### Environment Overrides
 

@@ -74,6 +74,68 @@ safe_replace() {
   fi
 }
 
+# Strip ANSI CSI (including DEC private modes), OSC, charset sequences, and CR characters
+strip_ansi_and_control() {
+  if command -v python3 &>/dev/null; then
+    python3 -c 'import re, sys
+s = sys.stdin.read()
+s = s.replace("\r\n", "\n").replace("\r", "")
+s = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", s)
+s = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", s)
+s = re.sub(r"\x1b[()][A-Za-z0-9]", "", s)
+s = re.sub(r"\x1b[@-Z\\-_]", "", s)
+sys.stdout.write(s)'
+  else
+    awk '{
+      gsub(/\r/, "")
+      gsub(/\033\][^\007\033]*(\007|\033\\)/, "")
+      gsub(/\033\[[0-?]*[ -\/]*[@-~]/, "")
+      gsub(/\033[()][A-Za-z0-9]/, "")
+      gsub(/\033[@-Z\\-_]/, "")
+      print
+    }'
+  fi
+}
+
+# Clean pane scrollback output: strip ANSI/control sequences, trim outer blank lines, collapse extra blank runs
+clean_pane_logs() {
+  strip_ansi_and_control | awk '
+    {
+      sub(/[ \t]+$/, "")
+      lines[NR] = $0
+    }
+    END {
+      first = 1
+      while (first <= NR && lines[first] == "") first++
+      last = NR
+      while (last >= first && lines[last] == "") last--
+      blank_run = 0
+      for (i = first; i <= last; i++) {
+        if (lines[i] == "") {
+          blank_run++
+          if (blank_run <= 1) print ""
+        } else {
+          blank_run = 0
+          print lines[i]
+        }
+      }
+    }
+  '
+}
+
+# Extract error lines with +/- 3 lines of context from cleaned pane logs
+extract_error_logs() {
+  local logs="$1"
+  local empty_msg="${2:-No errors found in the last 100 lines of logs.}"
+  local filtered
+  filtered=$(printf '%s\n' "$logs" | grep -i -B 3 -A 3 -E "error|fail|exception|fatal|panic")
+  if [ -z "$filtered" ]; then
+    printf '%s' "$empty_msg"
+  else
+    printf '%s' "$filtered"
+  fi
+}
+
 # Detect active multiplexer backend (herdr, tmux, or zellij)
 detect_backend() {
   case "$MUX_BACKEND_CONF" in
@@ -84,12 +146,13 @@ detect_backend() {
   esac
 
   # Auto-detection based on environment variables and active CLI responsiveness
-  if [ -n "$TMUX" ]; then
+  # Prioritize explicit Herdr plugin runtime context over inherited tmux/Zellij env vars
+  if [ -n "$HERDR_PLUGIN_CONTEXT_JSON" ]; then
+    echo "herdr"
+  elif [ -n "$TMUX" ]; then
     echo "tmux"
   elif [ -n "$ZELLIJ" ] || [ -n "$ZELLIJ_SESSION_NAME" ]; then
     echo "zellij"
-  elif [ -n "$HERDR_PLUGIN_CONTEXT_JSON" ]; then
-    echo "herdr"
   elif command -v "$TMUX_BIN" &>/dev/null && "$TMUX_BIN" info &>/dev/null; then
     echo "tmux"
   elif command -v "$HERDR_BIN" &>/dev/null; then
@@ -183,11 +246,23 @@ mux_get_target_pane_id() {
       echo "current"
     fi
   else
-    local pid=""
-    if [ -n "$context_json" ]; then
-      pid=$(printf '%s' "$context_json" | jq -r '.focused_pane_id // .focused_pane.id // empty' 2>/dev/null)
+    if [ -n "$PROMPTER_TARGET_PANE" ]; then
+      echo "$PROMPTER_TARGET_PANE"
+    elif [ -n "$PROMPTER_CALLER_PANE" ]; then
+      echo "$PROMPTER_CALLER_PANE"
+    else
+      local pid=""
+      if [ -n "$context_json" ]; then
+        pid=$(printf '%s' "$context_json" | jq -r '.focused_pane_id // .focused_pane.id // empty' 2>/dev/null)
+      fi
+      if [ -z "$pid" ] && [ -n "$HERDR_PANE_ID" ]; then
+        pid="$HERDR_PANE_ID"
+      fi
+      if [ -z "$pid" ] && command -v "$HERDR_BIN" &>/dev/null && command -v jq &>/dev/null; then
+        pid=$("$HERDR_BIN" pane list 2>/dev/null | jq -r '[.result.panes[] | select(.focused == true) | .pane_id][0] // empty' 2>/dev/null)
+      fi
+      echo "${pid:-current}"
     fi
-    echo "${pid:-current}"
   fi
 }
 
@@ -582,6 +657,15 @@ EOF
 cd "{{git_worktree}}"
 EOF
 
+  cat << 'EOF' > "${TEMPLATES_DIR}/analyze-other-pane.md"
+# Analyze Other Pane Errors
+Please inspect the recent errors from another terminal pane and explain the cause:
+
+```
+{{pane:choose:errors}}
+```
+EOF
+
   cat << 'EOF' > "$VARS_FILE"
 # Custom variable candidate generators ($ var_name: shell_command):
 # $ branch: git branch --format="%(refname:short)"
@@ -956,6 +1040,106 @@ choose_git_commit() {
   printf '%s' "$selected_line" | awk '{print $1}'
 }
 
+# Extract a multiplexer pane ID from a formatted mux_list_panes entry
+extract_pane_id_from_line() {
+  local line="$1"
+  local clean_line="${line% \[current\]}"
+  local pid=""
+  if [[ "$clean_line" =~ ^Pane[[:space:]]+([a-zA-Z0-9_-]+) ]]; then
+    pid="${BASH_REMATCH[1]}"
+  else
+    pid=$(printf '%s' "$clean_line" | grep -oE "(%[0-9]+|terminal_[0-9]+|surface:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+:p[a-zA-Z0-9_-]+)" | head -n 1)
+  fi
+  if [ -z "$pid" ]; then
+    pid=$(printf '%s' "$clean_line" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print $1}')
+  fi
+  if [ -z "$pid" ]; then
+    pid=$(printf '%s' "$clean_line" | awk -F'|' '{print $1}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^Surface[[:space:]]*//')
+  fi
+  printf '%s' "$pid"
+}
+
+# Put other panes first and mark the current target pane at the end with [current]
+format_pane_choose_options() {
+  local raw_options="$1"
+  local current_pid="${2:-$TARGET_PANE_ID}"
+  local others=""
+  local current_lines=""
+  local line pid
+
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    pid=$(extract_pane_id_from_line "$line")
+    if [ -n "$current_pid" ] && [ "$current_pid" != "current" ] && [ "$pid" = "$current_pid" ]; then
+      current_lines+="${line} [current]"$'\n'
+    else
+      others+="${line}"$'\n'
+    fi
+  done <<< "$raw_options"
+
+  printf '%s%s' "$others" "$current_lines"
+}
+
+# Choose pane-picker fzf preview layout based on terminal width to avoid truncating pane labels/headers
+get_pane_preview_window() {
+  local cols=""
+  if [ -r /dev/tty ]; then
+    cols=$(stty size </dev/tty 2>/dev/null | awk '{print $2}')
+  fi
+  if [ -z "$cols" ] && [ -n "${COLUMNS:-}" ]; then
+    cols="$COLUMNS"
+  fi
+  if [ -z "$cols" ] && command -v tput &>/dev/null; then
+    cols=$(tput cols 2>/dev/null || true)
+  fi
+  if [[ "$cols" =~ ^[0-9]+$ ]] && [ "$cols" -ge 110 ]; then
+    echo "right:55%:wrap"
+  else
+    echo "down:50%:wrap"
+  fi
+}
+
+# Prompt user to pick a pane (with live log preview) and return cleaned logs or error excerpts
+choose_pane_logs() {
+  local mode="$1"
+  local lines="${2:-100}"
+  local header="$3"
+
+  local pane_options
+  pane_options=$(mux_list_panes)
+  if [ -z "$pane_options" ]; then
+    echo "No other panes found." >&2
+    printf '%s' "No other panes"
+    return 0
+  fi
+
+  local formatted_options preview_win selected_pane_line
+  formatted_options=$(format_pane_choose_options "$pane_options" "$TARGET_PANE_ID")
+  preview_win=$(get_pane_preview_window)
+  selected_pane_line=$(printf '%s\n' "$formatted_options" | fzf \
+    --layout=reverse \
+    --header="$header" \
+    --preview="bash \"$SCRIPT_PATH\" --preview-pane {}" \
+    --preview-window="$preview_win")
+
+  if [ -z "$selected_pane_line" ]; then
+    echo "Cancelled pane selection." >&2
+    return 1
+  fi
+
+  local selected_pane_id
+  selected_pane_id=$(extract_pane_id_from_line "$selected_pane_line")
+  local raw_logs cleaned_logs
+  raw_logs=$(mux_read_pane_logs "$selected_pane_id" "$lines")
+  cleaned_logs=$(printf '%s' "$raw_logs" | clean_pane_logs)
+
+  if [ "$mode" == "errors" ]; then
+    extract_error_logs "$cleaned_logs" "No errors found in the last ${lines} lines of pane ${selected_pane_id}."
+  else
+    printf '%s' "$cleaned_logs"
+  fi
+}
+
 # Resolve all placeholders using non-recursive sentinel substitution
 resolve_placeholders() {
   local prompt="$1"
@@ -1288,16 +1472,30 @@ resolve_placeholders() {
       filtered_logs="[Target pane logs (Errors only)]"
     else
       local logs
-      logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 100)
-      logs=$(echo "$logs" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
-      filtered_logs=$(echo "$logs" | grep -i -B 3 -A 3 -E "error|fail|exception|fatal|panic")
-      if [ -z "$filtered_logs" ]; then
-        filtered_logs="No errors found in the last 100 lines of logs."
-      fi
+      logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 100 | clean_pane_logs)
+      filtered_logs=$(extract_error_logs "$logs" "No errors found in the last 100 lines of logs.")
     fi
     tokens+=("$tok")
     values+=("$filtered_logs")
   fi
+
+  local pane_lines_matches
+  pane_lines_matches=$(printf '%s' "$prompt" | grep -oE "\{\{pane_logs:lines=[0-9]+\}\}" | sort -u)
+  for plm in $pane_lines_matches; do
+    if [[ "$plm" =~ \{\{pane_logs:lines=([0-9]+)\}\} ]]; then
+      local n_lines="${BASH_REMATCH[1]}"
+      local tok="__${nonce}_PANELOGSLINES_${n_lines}__"
+      prompt=$(safe_replace "$prompt" "$plm" "$tok")
+      local logs_val=""
+      if [ "$is_preview" == "true" ]; then
+        logs_val="[Target pane logs (last ${n_lines} lines)]"
+      else
+        logs_val=$(mux_read_pane_logs "$TARGET_PANE_ID" "$n_lines" | clean_pane_logs)
+      fi
+      tokens+=("$tok")
+      values+=("$logs_val")
+    fi
+  done
 
   if [[ "$prompt" == *"{{pane_logs}}"* ]]; then
     local tok="__${nonce}_PANELOGS__"
@@ -1306,10 +1504,7 @@ resolve_placeholders() {
     if [ "$is_preview" == "true" ]; then
       logs_val="[Target pane logs (last 100 lines)]"
     else
-      local logs
-      logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 100)
-      logs=$(echo "$logs" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
-      logs_val="$logs"
+      logs_val=$(mux_read_pane_logs "$TARGET_PANE_ID" 100 | clean_pane_logs)
     fi
     tokens+=("$tok")
     values+=("$logs_val")
@@ -1323,8 +1518,7 @@ resolve_placeholders() {
       cmd_val="[Last executed command]"
     else
       local logs
-      logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 100)
-      logs=$(echo "$logs" | sed -E 's/\x1B\][^\x07]*\x07//g; s/\x1B\[[0-9;]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g')
+      logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 100 | strip_ansi_and_control)
       local last_cmd=""
       while IFS= read -r line || [ -n "$line" ]; do
         [[ "$line" =~ ^[[:space:]]*$ ]] && continue
@@ -1383,26 +1577,22 @@ resolve_placeholders() {
       local pane_options
       pane_options=$(mux_list_panes)
       if [ -n "$pane_options" ]; then
-        # Multi-selection fzf
-        local selected_panes_lines
-        selected_panes_lines=$(echo "$pane_options" | fzf --layout=reverse -m --header="Select target panes for broadcast (Tab to select multiple, Enter to confirm):")
+        # Multi-selection fzf with live pane log preview
+        local preview_win selected_panes_lines
+        preview_win=$(get_pane_preview_window)
+        selected_panes_lines=$(echo "$pane_options" | fzf \
+          --layout=reverse \
+          -m \
+          --header="Select target panes for broadcast (Tab to select multiple, Enter to confirm):" \
+          --preview="bash \"$SCRIPT_PATH\" --preview-pane {}" \
+          --preview-window="$preview_win")
         if [ -n "$selected_panes_lines" ]; then
           TARGET_PANES=()
           local pane_labels=""
           while read -r line; do
             [ -z "$line" ] && continue
-            local pid=""
-            if [[ "$line" =~ ^Pane[[:space:]]+([a-zA-Z0-9_-]+) ]]; then
-              pid="${BASH_REMATCH[1]}"
-            else
-              pid=$(echo "$line" | grep -oE "(%[0-9]+|terminal_[0-9]+|surface:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+:p[a-zA-Z0-9_-]+)" | head -n 1)
-            fi
-            if [ -z "$pid" ]; then
-              pid=$(echo "$line" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print $1}')
-            fi
-            if [ -z "$pid" ]; then
-              pid=$(echo "$line" | awk -F'|' '{print $1}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^Surface[[:space:]]*//')
-            fi
+            local pid
+            pid=$(extract_pane_id_from_line "$line")
             [ -n "$pid" ] && TARGET_PANES+=("$pid") && pane_labels="${pane_labels}${pid} "
           done <<< "$selected_panes_lines"
           panes_val="${pane_labels}"
@@ -1419,6 +1609,37 @@ resolve_placeholders() {
     values+=("$panes_val")
   fi
 
+  if [[ "$prompt" == *"{{pane:choose:errors}}"* ]]; then
+    local tok="__${nonce}_PANECHOOSEERRORS__"
+    prompt=$(safe_replace "$prompt" "{{pane:choose:errors}}" "$tok")
+    local pane_err_val=""
+    if [ "$is_preview" == "true" ]; then
+      pane_err_val="[Error logs from selected pane]"
+    else
+      pane_err_val=$(choose_pane_logs "errors" 100 "Select a pane to import logs from: (Errors only)") || exit 0
+    fi
+    tokens+=("$tok")
+    values+=("$pane_err_val")
+  fi
+
+  local pane_choose_lines_matches
+  pane_choose_lines_matches=$(printf '%s' "$prompt" | grep -oE "\{\{pane:choose:lines=[0-9]+\}\}" | sort -u)
+  for pcm in $pane_choose_lines_matches; do
+    if [[ "$pcm" =~ \{\{pane:choose:lines=([0-9]+)\}\} ]]; then
+      local n_lines="${BASH_REMATCH[1]}"
+      local tok="__${nonce}_PANECHOOSELINES_${n_lines}__"
+      prompt=$(safe_replace "$prompt" "$pcm" "$tok")
+      local pane_lines_val=""
+      if [ "$is_preview" == "true" ]; then
+        pane_lines_val="[Logs from selected pane (last ${n_lines} lines)]"
+      else
+        pane_lines_val=$(choose_pane_logs "logs" "$n_lines" "Select a pane to import logs from: (last ${n_lines} lines)") || exit 0
+      fi
+      tokens+=("$tok")
+      values+=("$pane_lines_val")
+    fi
+  done
+
   if [[ "$prompt" == *"{{pane:choose}}"* ]]; then
     local tok="__${nonce}_PANECHOOSE__"
     prompt=$(safe_replace "$prompt" "{{pane:choose}}" "$tok")
@@ -1426,36 +1647,7 @@ resolve_placeholders() {
     if [ "$is_preview" == "true" ]; then
       pane_val="[Content of selected pane]"
     else
-      local pane_options
-      pane_options=$(mux_list_panes)
-      if [ -n "$pane_options" ]; then
-        local selected_pane_line
-        selected_pane_line=$(echo "$pane_options" | fzf --layout=reverse --header="Select a pane to import logs from:")
-        if [ -n "$selected_pane_line" ]; then
-          local selected_pane_id=""
-          if [[ "$selected_pane_line" =~ ^Pane[[:space:]]+([a-zA-Z0-9_-]+) ]]; then
-            selected_pane_id="${BASH_REMATCH[1]}"
-          else
-            selected_pane_id=$(echo "$selected_pane_line" | grep -oE "(%[0-9]+|terminal_[0-9]+|surface:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+:p[a-zA-Z0-9_-]+)" | head -n 1)
-          fi
-          if [ -z "$selected_pane_id" ]; then
-            selected_pane_id=$(echo "$selected_pane_line" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print $1}')
-          fi
-          if [ -z "$selected_pane_id" ]; then
-            selected_pane_id=$(echo "$selected_pane_line" | awk -F'|' '{print $1}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//;s/^Surface[[:space:]]*//')
-          fi
-          local imported_logs
-          imported_logs=$(mux_read_pane_logs "$selected_pane_id" 100)
-          imported_logs=$(echo "$imported_logs" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
-          pane_val="$imported_logs"
-        else
-          echo "Cancelled pane selection." >&2
-          exit 0
-        fi
-      else
-        echo "No other panes found." >&2
-        pane_val="No other panes"
-      fi
+      pane_val=$(choose_pane_logs "logs" 100 "Select a pane to import logs from:") || exit 0
     fi
     tokens+=("$tok")
     values+=("$pane_val")
@@ -1571,7 +1763,7 @@ resolve_placeholders() {
       pane_logs=$(mux_read_pane_logs "$TARGET_PANE_ID" 50)
       if [ -n "$pane_logs" ]; then
         local pane_logs_clean
-        pane_logs_clean=$(echo "$pane_logs" | sed -E 's/\x1B\][^\x07]*\x07//g; s/\x1B\[[0-9;]*[a-zA-Z]//g; s/\x1B[()][A-Z0-9]//g')
+        pane_logs_clean=$(printf '%s' "$pane_logs" | strip_ansi_and_control)
         local err_info
         err_info=$(echo "$pane_logs_clean" | grep -i -E "error|fail|exception|fatal|panic|err:" | tail -n 15)
         if [ -z "$err_info" ]; then
@@ -1632,6 +1824,22 @@ if [ "$1" == "--list-all" ]; then
 fi
 
 # --- Handle Preview Mode ---
+if [ "$1" == "--preview-pane" ]; then
+  PREVIEW_PANE_ID=$(extract_pane_id_from_line "$2")
+  if [ -z "$PREVIEW_PANE_ID" ]; then
+    echo "Could not resolve pane ID."
+    exit 0
+  fi
+  echo "=== Pane: ${PREVIEW_PANE_ID} ==="
+  pane_preview_logs=$(mux_read_pane_logs "$PREVIEW_PANE_ID" 40 | clean_pane_logs | tail -n 30)
+  if [ -n "$pane_preview_logs" ]; then
+    printf '%s\n' "$pane_preview_logs"
+  else
+    echo "(No pane output)"
+  fi
+  exit 0
+fi
+
 if [ "$1" == "--preview-only" ]; then
   SELECTED_TITLE=$(printf '%s' "$2" | tr -d '\r')
   CONTEXT_JSON="${3:-$HERDR_PLUGIN_CONTEXT_JSON}"
@@ -1705,6 +1913,7 @@ export TMUX_BIN
 export ZELLIJ_BIN
 export MUX_BACKEND
 export CURRENT_BACKEND
+export TARGET_PANE_ID
 export CONFIG_DIR
 export TEMPLATES_DIR
 export VARS_FILE
@@ -1727,7 +1936,7 @@ while true; do
   # Run fzf with preview panel enabled and dynamic reload binding
   # Default view: Templates
   SELECTED_OPTION=$(fzf \
-    --header="[Ctrl-T] Templates  |  [Ctrl-R] History  |  [Ctrl-A] All Options" \
+    --header="[${CURRENT_BACKEND}: ${TARGET_PANE_ID}]  [Ctrl-T] Templates  |  [Ctrl-R] History  |  [Ctrl-A] All Options" \
     --prompt="Templates> " \
     --layout=reverse \
     --delimiter=$'\t' \
