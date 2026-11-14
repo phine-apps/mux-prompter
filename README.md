@@ -150,10 +150,14 @@ You can use any of the following placeholders inside your prompt templates:
 
 | Placeholder           | Description                          | Example Output          |
 | :-------------------- | :----------------------------------- | :---------------------- |
-| `{{git_diff}}`        | Full `git diff` of unstaged changes  | Diff of modified files  |
-| `{{git_diff:staged}}` | `git diff` of staged changes only    | Diff of staged files    |
-| `{{git_status}}`      | Concise git status (`git status -s`) | ` M src/main.rs`        |
-| `{{git_branch}}`      | Current active git branch name       | `main` or `feature-xyz` |
+| `{{git_diff}}`        | Full `git diff` of unstaged changes                   | Diff of modified files  |
+| `{{git_diff:staged}}` | `git diff` of staged changes only                     | Diff of staged files    |
+| `{{git_diff:branch}}` | `git diff` between base branch and `HEAD` (`base...HEAD`) | Diff of branch commits  |
+| `{{git_log}}`         | Recent commit history (`git log -n 10 --oneline`)     | `a1b2c3d feat: ...`     |
+| `{{git_log:branch}}`  | Commits on current branch since diverging from base   | `e4f5a6b fix: ...`      |
+| `{{git_status}}`      | Concise git status (`git status -s`)                  | ` M src/main.rs`        |
+| `{{git_branch}}`      | Current active git branch name                        | `main` or `feature-xyz` |
+| `{{git_conflicts}}`   | Extracts conflict blocks (`<<<<<<<`–`>>>>>>>`) with context | Conflicted hunks  |
 
 ### 🖥️ Terminal & Pane Context
 
@@ -174,6 +178,11 @@ You can use any of the following placeholders inside your prompt templates:
 | `{{file}}`            | Pick a file from repository          | `fzf` opens to select a file. Injects **full contents** of the file.        |
 | `{{file_path}}`       | Pick a file from repository          | `fzf` opens to select a file. Injects **relative path** of the file.        |
 | `{{file:lines=1-20}}` | Truncate specific lines from a file  | Injects lines 1 to 20 from selected file.                                   |
+| `{{git_worktree}}`    | Pick a git worktree in repository    | `fzf` opens with branch/status/log preview. Injects **directory path** of the selected worktree (e.g. `cd "{{git_worktree}}"`). |
+| `{{git_commit}}`      | Pick a git commit from history       | `fzf` opens with `git show` preview. Injects **commit hash**.               |
+| `{{git_commit:diff}}` | Pick a git commit from history       | `fzf` opens with `git show` preview. Injects **full commit patch** (`git show`). |
+| `{{git_branch:choose}}` | Pick a local or remote git branch  | `fzf` opens with branch log preview. Injects **branch name**.               |
+| `{{git_changed_file}}` | Pick a changed or untracked file    | `fzf` opens with diff/file preview. Injects **relative file path**.         |
 | `{{input}}`           | Custom multi-line prompt input       | Prompts for manual input in terminal (Ctrl+D to finish).                    |
 | `{{var:name}}`        | Interactive custom variable          | Prompts for value `name` (or shows `fzf` choices if generator is defined).  |
 
