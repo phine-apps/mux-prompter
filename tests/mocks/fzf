@@ -84,13 +84,19 @@ fi
 
 # Case 3: Single Pane selection
 if [[ "$args" == *"Select a pane to import logs from:"* ]]; then
-  echo "0.1 | %1 (/mock/home)"
+  if [ "$CURRENT_BACKEND" = "zellij" ] || [ "$MUX_BACKEND" = "zellij" ]; then
+    echo "Build | terminal_1 (runner) (/mock/zellij/other-tab)"
+  else
+    echo "0.1 | %1 (/mock/home)"
+  fi
   exit 0
 fi
 
 # Case 4: Multiple Panes selection (broadcast)
 if [[ "$args" == *"Select target panes for broadcast"* ]]; then
-  if [ "$MUX_BACKEND" = "tmux" ]; then
+  if [ "$CURRENT_BACKEND" = "zellij" ] || [ "$MUX_BACKEND" = "zellij" ]; then
+    echo -e "Tab #1 | terminal_0 (editor) (/mock/zellij/workspace)\nBuild | terminal_1 (runner) (/mock/zellij/other-tab)"
+  elif [ "$MUX_BACKEND" = "tmux" ]; then
     echo -e "0.0 | %0 (/mock/workspace)\n0.1 | %1 (/mock/home)"
   else
     echo -e "w2:p1 | No Label (/mock/home)\nw2:p3 | Prompter UI (/mock/apps/mux-prompter)"

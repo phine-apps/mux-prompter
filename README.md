@@ -5,12 +5,12 @@
 </p>
 
 <p align="center">
-  <b>Fuzzy-pick and inject context-aware prompts into active Herdr and tmux panes.</b>
+  <b>Fuzzy-pick and inject context-aware prompts into active Herdr, tmux, and Zellij panes.</b>
 </p>
 
 ---
 
-**Mux Prompter** is a prompt productivity plugin for terminal multiplexers ([Herdr](https://herdr.dev) and [tmux](https://github.com/tmux/tmux)). It allows you to instantly pick and inject reusable prompt templates into your active terminal pane with a single keyboard shortcut.
+**Mux Prompter** is a prompt productivity plugin for terminal multiplexers ([Herdr](https://herdr.dev), [tmux](https://github.com/tmux/tmux), and [Zellij](https://zellij.dev)). It allows you to instantly pick and inject reusable prompt templates into your active terminal pane with a single keyboard shortcut.
 
 Additionally, it can automatically resolve context placeholders—such as error logs, git diffs, file contents, and selected code—eliminating the hassle of manual copy-pasting when interacting with AI coding assistants.
 
@@ -115,6 +115,31 @@ set -g @prompter-height '60%'  # Custom popup height (default: 60%)
     # Fallback for older tmux versions (< 3.2 without display-popup support):
     # bind-key P split-window -h -c "#{pane_current_path}" "PROMPTER_CALLER_PANE='#{pane_id}' ~/apps/mux-prompter/prompter.sh"
     ```
+
+---
+
+### 🟡 Zellij Setup (v0.44+ Recommended)
+
+Mux Prompter supports **Zellij (0.44+)** across tabs and floating panes using `--pane-id` targeting, `paste --` bracketed injection, `dump-screen --full`, and `list-panes` / `list-tabs` JSON queries.
+
+1. **Clone Repository**:
+   ```bash
+   git clone https://github.com/phine-apps/mux-prompter.git ~/apps/mux-prompter
+   ```
+
+2. **Add Keybinding to `~/.config/zellij/config.kdl`**:
+   ```kdl
+   keybinds {
+       shared {
+           bind "Alt p" {
+               Run "bash" "-lc" "~/apps/mux-prompter/prompter.sh" {
+                   floating true
+                   close_on_exit true
+               }
+           }
+       }
+   }
+   ```
 
 ---
 
@@ -251,14 +276,15 @@ If an existing single-file `templates.txt` is detected, Mux Prompter will **auto
 
 ---
 
-## 🔀 Hybrid Multiplexer Support (Herdr & tmux)
+## 🔀 Hybrid Multiplexer Support (Herdr, tmux & Zellij)
 
-Mux Prompter natively supports **[Herdr](https://herdr.dev)** and **[tmux](https://github.com/tmux/tmux)** multiplexers via a unified backend abstraction layer.
+Mux Prompter natively supports **[Herdr](https://herdr.dev)**, **[tmux](https://github.com/tmux/tmux)**, and **[Zellij](https://zellij.dev)** multiplexers via a unified backend abstraction layer.
 
 ### Automatic Detection
 
 By default, Mux Prompter automatically detects which terminal multiplexer environment is currently active:
 - **`tmux`**: Detected when running inside a `tmux` session (`$TMUX` environment variable is set) or when `tmux` CLI responds.
+- **`zellij`**: Detected when running inside a `zellij` session (`$ZELLIJ` or `$ZELLIJ_SESSION_NAME` is set).
 - **`herdr`**: Detected when `$HERDR_PLUGIN_CONTEXT_JSON` is present or running as a Herdr plugin entrypoint.
 
 ### Environment Overrides
@@ -266,18 +292,43 @@ By default, Mux Prompter automatically detects which terminal multiplexer enviro
 You can explicitly override the backend selection by setting the `MUX_BACKEND` environment variable:
 
 ```bash
-export MUX_BACKEND="tmux"   # Force tmux backend
+export MUX_BACKEND="tmux"    # Force tmux backend
 # or
-export MUX_BACKEND="herdr"  # Force Herdr backend
+export MUX_BACKEND="zellij"  # Force Zellij backend
+# or
+export MUX_BACKEND="herdr"   # Force Herdr backend
 ```
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `MUX_BACKEND` | `auto`, `tmux`, or `herdr` | `auto` |
+| `MUX_BACKEND` | `auto`, `tmux`, `zellij`, or `herdr` | `auto` |
 | `TMUX_BIN_PATH` | Custom path to `tmux` executable | `tmux` |
+| `ZELLIJ_BIN_PATH` | Custom path to `zellij` executable | `zellij` |
 | `HERDR_BIN_PATH` | Custom path to `herdr` executable | `herdr` |
-| `PROMPTER_CALLER_PANE` | Originating pane ID in tmux (passed automatically by TPM / popup binding) | Current pane |
+| `PROMPTER_CALLER_PANE` | Originating pane ID in tmux / Zellij (passed automatically by popup binding) | Current pane |
 | `PROMPTER_TARGET_PANE` | Explicitly targets a specific pane ID for prompt injection | Detected active pane |
+
+---
+
+## 🧪 Testing
+
+### Unit Tests (Bats)
+
+```bash
+bats tests/test_prompter.bats < /dev/null
+```
+
+### Real-Multiplexer E2E Tests
+
+Runs real `fzf` and real isolated multiplexer sessions (`tmux`, `zellij`, `herdr`) via PTY without touching live user sessions:
+
+```bash
+python3 tests/e2e_test.py --backend all
+# Or target a single backend:
+python3 tests/e2e_test.py --backend tmux
+python3 tests/e2e_test.py --backend zellij
+python3 tests/e2e_test.py --backend herdr
+```
 
 ---
 
