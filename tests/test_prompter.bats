@@ -1,6 +1,8 @@
 #!/usr/bin/env bats
 # Mux Prompter - Unit / Integration Tests (Bats version)
 # SPDX-License-Identifier: MIT
+# Bats runs each @test block in an isolated subshell, so per-test env exports are intentional.
+# shellcheck disable=SC2030,SC2031
 
 # Each test gets a completely isolated, unique temporary environment
 setup() {
@@ -49,8 +51,9 @@ setup() {
   git add dummy_staged_file.txt
 
   # Setup standard plugin contexts
-  HERDR_PLUGIN_CONTEXT_JSON="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\", \"selected_text\": \"fn test() {}\"}"
-  export HERDR_PLUGIN_CONTEXT_JSON
+  # JSON payload intentionally contains quotes and is passed via env var
+  # shellcheck disable=SC2089,SC2090
+  export HERDR_PLUGIN_CONTEXT_JSON="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\", \"selected_text\": \"fn test() {}\"}"
 
   # Create large dummy file for preview truncation tests
   echo -e "line1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\nline30\nline31" > dummy_test_file.txt
@@ -58,7 +61,7 @@ setup() {
 
 teardown() {
   # Change back to bats test directory before cleaning up
-  cd "$BATS_TEST_DIRNAME"
+  cd "$BATS_TEST_DIRNAME" || return 1
   rm -rf "$TEST_TEMP_DIR"
 }
 
@@ -458,7 +461,8 @@ EOF
   mkdir -p "$NON_GIT_DIR"
   cd "$NON_GIT_DIR" || exit 1
   NON_GIT_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$NON_GIT_DIR\"}"
-  export GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  export GIT_CEILING_DIRECTORIES
   
   run bash "$PROMPTER_SCRIPT" --preview-only "Review Git Changes" "$NON_GIT_CONTEXT"
   [ "$status" -eq 0 ]
@@ -536,8 +540,9 @@ EOF
 }
 
 @test "I-07: Auto-detection (Herdr)" {
-  HERDR_PLUGIN_CONTEXT_JSON="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\", \"selected_text\": \"fn test() {}\"}"
-  export HERDR_PLUGIN_CONTEXT_JSON
+  # JSON payload intentionally contains quotes and is passed via env var
+  # shellcheck disable=SC2089,SC2090
+  export HERDR_PLUGIN_CONTEXT_JSON="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\", \"selected_text\": \"fn test() {}\"}"
   export MUX_BACKEND="auto"
   export TEST_STAGE="logs"
   rm -f "$MOCK_LOG_DIR"/*.log
@@ -740,6 +745,8 @@ EOF
     echo "$cmd_candidate"
   '
   [ "$status" -eq 0 ]
+  # Assert literal $FOO in output without expansion
+  # shellcheck disable=SC2016
   [ "$output" = 'echo $FOO $ BAR # production comment' ]
 }
 
@@ -1086,7 +1093,8 @@ EOF
   cd "$NON_GIT_DIR" || exit 1
   NON_GIT_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$NON_GIT_DIR\"}"
   export HERDR_PLUGIN_CONTEXT_JSON="$NON_GIT_CONTEXT"
-  export GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  export GIT_CEILING_DIRECTORIES
   export TEST_STAGE="git_worktree"
   rm -f "$MOCK_LOG_DIR"/*.log
   run bash "$PROMPTER_SCRIPT"
@@ -1282,7 +1290,8 @@ EOF
   NON_GIT_DIR="$TEST_TEMP_DIR/non_git_conflict_dir"
   mkdir -p "$NON_GIT_DIR"
   NON_GIT_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$NON_GIT_DIR\"}"
-  export GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  export GIT_CEILING_DIRECTORIES
   run bash "$PROMPTER_SCRIPT" --preview-only "Git Conflicts Test" "$NON_GIT_CONTEXT"
   [ "$status" -eq 0 ]
   [ "$output" = "Not a git repository" ]
@@ -1550,6 +1559,8 @@ EOF
     echo "SPACE: $out_space"
   '
   [ "$status" -eq 0 ]
+  # Assert literal command substitution string was not executed
+  # shellcheck disable=SC2016
   [[ "$output" == *'INJ: [/tmp/test"$(echo pwned)".md]'* ]]
   [[ "$output" != *"testpwned.md"* ]]
   [[ "$output" == *'SPACE: [/tmp/my template.md]'* ]]

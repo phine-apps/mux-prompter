@@ -24,18 +24,18 @@ import sys
 import tempfile
 import termios
 import time
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
-
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROMPTER_SCRIPT = REPO_ROOT / "prompter.sh"
 
 ANSI_RE = re.compile(
     r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC sequences
-    r"|\x1b\[[0-9;?]*[A-Za-z@]"          # CSI sequences
-    r"|\x1b[()][A-Za-z0-9]"              # Charset switches
-    r"|\x1b[=>]"                         # Keypad mode
+    r"|\x1b\[[0-9;?]*[A-Za-z@]"  # CSI sequences
+    r"|\x1b[()][A-Za-z0-9]"  # Charset switches
+    r"|\x1b[=>]"  # Keypad mode
 )
 
 
@@ -44,16 +44,14 @@ def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text).replace("\r", "\n")
 
 
-def clean_env(extra: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def clean_env(extra: dict[str, str] | None = None) -> dict[str, str]:
     """Build an environment stripped of inherited multiplexer state."""
     env = os.environ.copy()
     for key in list(env.keys()):
-        if (
-            key.startswith("TMUX")
-            or key.startswith("ZELLIJ")
-            or key.startswith("HERDR_")
-            or key.startswith("PROMPTER_")
-            or key in ("MUX_BACKEND", "VISUAL", "EDITOR")
+        if key.startswith(("TMUX", "ZELLIJ", "HERDR_", "PROMPTER_")) or key in (
+            "MUX_BACKEND",
+            "VISUAL",
+            "EDITOR",
         ):
             env.pop(key, None)
     if "herdr" in env.get("SSH_AUTH_SOCK", "").lower():
@@ -71,9 +69,9 @@ class PTYController:
 
     def __init__(
         self,
-        cmd: List[str],
-        env: Dict[str, str],
-        cwd: Optional[str] = None,
+        cmd: list[str],
+        env: dict[str, str],
+        cwd: str | None = None,
         rows: int = 36,
         cols: int = 120,
         verbose: bool = False,
@@ -98,7 +96,7 @@ class PTYController:
 
     def drain(self, wait_s: float = 0.05) -> str:
         """Read any currently available PTY bytes without blocking indefinitely."""
-        chunks: List[bytes] = []
+        chunks: list[bytes] = []
         deadline = time.monotonic() + wait_s
         while True:
             remaining = max(0.0, deadline - time.monotonic())
@@ -205,15 +203,11 @@ class PTYController:
             try:
                 self.proc.terminate()
                 self.proc.wait(timeout=2.0)
-            except Exception:
-                try:
+            except (subprocess.SubprocessError, OSError):
+                with suppress(OSError):
                     self.proc.kill()
-                except Exception:
-                    pass
-        try:
+        with suppress(OSError):
             os.close(self.master)
-        except OSError:
-            pass
 
 
 def setup_git_workspace(ws_dir: Path) -> None:
@@ -236,7 +230,9 @@ def setup_git_workspace(ws_dir: Path) -> None:
     git("config", "user.email", "e2e@example.com")
     git("config", "user.name", "E2E Runner")
 
-    (src_dir / "sample.txt").write_text("line1\nline2_target\nline3_target\nline4\n", encoding="utf-8")
+    (src_dir / "sample.txt").write_text(
+        "line1\nline2_target\nline3_target\nline4\n", encoding="utf-8"
+    )
     (ws_dir / "app.txt").write_text("base_line\n", encoding="utf-8")
     git("add", ".")
     git("commit", "-m", "initial")
@@ -244,7 +240,9 @@ def setup_git_workspace(ws_dir: Path) -> None:
 
     (ws_dir / "app.txt").write_text("base_line\nSTAGED_E2E_LINE\n", encoding="utf-8")
     git("add", "app.txt")
-    (ws_dir / "app.txt").write_text("base_line\nSTAGED_E2E_LINE\nUNSTAGED_E2E_LINE\n", encoding="utf-8")
+    (ws_dir / "app.txt").write_text(
+        "base_line\nSTAGED_E2E_LINE\nUNSTAGED_E2E_LINE\n", encoding="utf-8"
+    )
 
 
 def setup_templates(cfg_dir: Path) -> None:
@@ -313,7 +311,7 @@ class RunnerStats:
     """Track pass/fail/skip outcomes across suites."""
 
     def __init__(self) -> None:
-        self.results: List[Tuple[str, str, str]] = []
+        self.results: list[tuple[str, str, str]] = []
 
     def record(self, status: str, name: str, detail: str = "") -> None:
         self.results.append((status, name, detail))
@@ -324,7 +322,7 @@ class RunnerStats:
         try:
             fn()
             self.record("PASS", name)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.record("FAIL", name, str(exc))
 
     def has_failures(self) -> bool:
@@ -334,13 +332,17 @@ class RunnerStats:
         passed = sum(1 for s, _, _ in self.results if s == "PASS")
         failed = sum(1 for s, _, _ in self.results if s == "FAIL")
         skipped = sum(1 for s, _, _ in self.results if s == "SKIP")
-        print(f"\nE2E Summary: {passed} passed, {failed} failed, {skipped} skipped", flush=True)
+        print(
+            f"\nE2E Summary: {passed} passed, {failed} failed, {skipped} skipped",
+            flush=True,
+        )
         return 1 if failed else 0
 
 
 # ---------------------------------------------------------------------------
 # tmux E2E Suite
 # ---------------------------------------------------------------------------
+
 
 def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
     if not shutil.which("tmux"):
@@ -360,22 +362,20 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
     # Fake EDITOR script for T-03 (Edit Templates creation test) and E-02 (killed editor)
     editor_ok = tmp / "fake_editor_ok.sh"
     editor_ok.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '\\nCREATED_BY_E2E_EDITOR\\n' >> \"$1\"\n",
+        "#!/usr/bin/env bash\nprintf '\\nCREATED_BY_E2E_EDITOR\\n' >> \"$1\"\n",
         encoding="utf-8",
     )
     editor_ok.chmod(0o755)
 
     editor_kill = tmp / "fake_editor_kill.sh"
     editor_kill.write_text(
-        "#!/usr/bin/env bash\n"
-        "kill -9 $$\n",
+        "#!/usr/bin/env bash\nkill -9 $$\n",
         encoding="utf-8",
     )
     editor_kill.chmod(0o755)
 
     tmux_conf.write_text(
-        "set -g default-command \"bash --norc --noprofile\"\n"
+        'set -g default-command "bash --norc --noprofile"\n'
         "set -sg escape-time 10\n"
         "set -sg assume-paste-time 0\n"
         f"bind-key P display-popup -E -w 85% -h 70% "
@@ -389,6 +389,7 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
     def tmux(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         res = subprocess.run(
             ["tmux", "-L", sock, "-f", str(tmux_conf), *args],
+            check=False,
             capture_output=True,
             text=True,
             env=base_env,
@@ -400,10 +401,12 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             )
         return res
 
-    client: Optional[PTYController] = None
+    client: PTYController | None = None
     try:
         # Start isolated tmux server with Window 0 (git ws) and Window 1 (other ws)
-        tmux("new-session", "-d", "-s", "e2e", "-x", "120", "-y", "36", "-c", str(ws_dir))
+        tmux(
+            "new-session", "-d", "-s", "e2e", "-x", "120", "-y", "36", "-c", str(ws_dir)
+        )
         p0 = tmux("display-message", "-p", "#{pane_id}").stdout.strip()
         tmux("new-window", "-t", "e2e", "-c", str(other_dir))
         p1 = tmux("display-message", "-p", "#{pane_id}").stdout.strip()
@@ -451,7 +454,13 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
         def start_cat_capture(pane_id: str, out_file: Path) -> None:
             # Non-canonical mode flushes every byte immediately without requiring newline or Ctrl-D
             tmux("send-keys", "-t", pane_id, "C-u")
-            tmux("send-keys", "-t", pane_id, f"stty -echo -icanon min 1 time 0; cat > '{out_file}'; stty sane", "Enter")
+            tmux(
+                "send-keys",
+                "-t",
+                pane_id,
+                f"stty -echo -icanon min 1 time 0; cat > '{out_file}'; stty sane",
+                "Enter",
+            )
             time.sleep(0.25)
 
         def finish_cat_capture(pane_id: str, out_file: Path) -> str:
@@ -463,10 +472,19 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             time.sleep(0.25)
             tmux("send-keys", "-t", pane_id, "C-c")
             wait_for_condition(
-                lambda: "READY>" in (
-                    [ln for ln in tmux("capture-pane", "-t", pane_id, "-p").stdout.splitlines() if ln.strip()]
-                    or [""]
-                )[-1],
+                lambda: (
+                    "READY>"
+                    in (
+                        [
+                            ln
+                            for ln in tmux(
+                                "capture-pane", "-t", pane_id, "-p"
+                            ).stdout.splitlines()
+                            if ln.strip()
+                        ]
+                        or [""]
+                    )[-1]
+                ),
                 timeout=6.0,
                 desc=f"shell return in {pane_id}",
             )
@@ -476,15 +494,17 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             # 1) !Bang title must NOT execute command automatically on shell prompt
             open_popup_and_pick("E2E Bang No Exec")
             wait_for_condition(
-                lambda: "__EXECUTED_BANG__" in tmux("capture-pane", "-t", p0, "-p").stdout,
+                lambda: (
+                    "__EXECUTED_BANG__" in tmux("capture-pane", "-t", p0, "-p").stdout
+                ),
                 desc="bang command inserted into buffer",
             )
             time.sleep(0.3)
             captured_lines = tmux("capture-pane", "-t", p0, "-p").stdout.splitlines()
             # Ensure it sits in input line (READY> ...) and did NOT print standalone output
-            assert not any(line.strip() == "__EXECUTED_BANG__" for line in captured_lines), (
-                f"Bang template auto-executed unexpectedly: {captured_lines}"
-            )
+            assert not any(
+                line.strip() == "__EXECUTED_BANG__" for line in captured_lines
+            ), f"Bang template auto-executed unexpectedly: {captured_lines}"
             tmux("send-keys", "-t", p0, "C-c")
             time.sleep(0.15)
 
@@ -493,7 +513,9 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             start_cat_capture(p0, out)
             open_popup_and_pick("E2E Safe Symbols")
             text = finish_cat_capture(p0, out)
-            assert '日本語テスト "quoted" $HOME \\path | pipe !bang' in text, f"Got: {text!r}"
+            assert '日本語テスト "quoted" $HOME \\path | pipe !bang' in text, (
+                f"Got: {text!r}"
+            )
 
         def case_02_git_context() -> None:
             out = tmp / "p02_git.txt"
@@ -505,12 +527,22 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             unstaged_part, staged_part = text.split("STAGED_ONLY:", 1)
             assert "UNSTAGED_E2E_LINE" in unstaged_part, text
             assert "STAGED_E2E_LINE" in staged_part, text
-            assert "UNSTAGED_E2E_LINE" not in staged_part, f"Staged diff leaked unstaged: {text}"
+            assert "UNSTAGED_E2E_LINE" not in staged_part, (
+                f"Staged diff leaked unstaged: {text}"
+            )
 
         def case_03_logs_errors_and_manual_fallback() -> None:
-            tmux("send-keys", "-t", p0, "printf '\\033[31mERROR: tmux_e2e_fail_42\\033[0m\\n'", "Enter")
+            tmux(
+                "send-keys",
+                "-t",
+                p0,
+                "printf '\\033[31mERROR: tmux_e2e_fail_42\\033[0m\\n'",
+                "Enter",
+            )
             wait_for_condition(
-                lambda: "tmux_e2e_fail_42" in tmux("capture-pane", "-t", p0, "-p").stdout,
+                lambda: (
+                    "tmux_e2e_fail_42" in tmux("capture-pane", "-t", p0, "-p").stdout
+                ),
                 desc="p0 colored error output",
             )
             out = tmp / "p03_logs.txt"
@@ -536,13 +568,21 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
 
                 p_pty = PTYController(
                     ["bash", str(PROMPTER_SCRIPT)],
-                    env={**base_env, "TMUX": tmux("display-message", "-p", "#{socket_path},#{pid},0").stdout.strip(), "PROMPTER_TARGET_PANE": p2},
+                    env={
+                        **base_env,
+                        "TMUX": tmux(
+                            "display-message", "-p", "#{socket_path},#{pid},0"
+                        ).stdout.strip(),
+                        "PROMPTER_TARGET_PANE": p2,
+                    },
                     cwd=str(ws_dir),
                     verbose=verbose,
                 )
                 try:
                     m0 = p_pty.mark()
-                    m0 = p_pty.fzf_pick("E2E Manual Fallback", header_wait="Templates>", since=m0)
+                    m0 = p_pty.fzf_pick(
+                        "E2E Manual Fallback", header_wait="Templates>", since=m0
+                    )
                     p_pty.wait_for("Enter the command manually", since=m0)
                     p_pty.send("make test-manual\r", delay_after=0.1)
                     rc = p_pty.wait_exit(timeout=10.0)
@@ -550,7 +590,10 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
                 finally:
                     p_pty.close()
                 wait_for_condition(
-                    lambda: "CMD=make test-manual" in tmux("capture-pane", "-t", p2, "-p").stdout,
+                    lambda: (
+                        "CMD=make test-manual"
+                        in tmux("capture-pane", "-t", p2, "-p").stdout
+                    ),
                     desc="manual last_command inserted into p2",
                 )
             finally:
@@ -561,13 +604,17 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             start_cat_capture(p0, out)
             m = open_popup_and_pick("E2E Vars Files Input")
             # 1) {{var:branch}} opens fzf candidates from _vars.txt
-            m = client.fzf_pick("feat/e2e-check", header_wait="Select value for branch", since=m)
+            m = client.fzf_pick(
+                "feat/e2e-check", header_wait="Select value for branch", since=m
+            )
             # 2) {{var:manual_note}} prompts on terminal
             client.wait_for("Enter value for [manual_note]:", since=m)
             m = client.send_and_mark("typed_note_abc\r", delay_after=0.1)
             # 3) {{input}} multi-line input ended by Ctrl-D
             client.wait_for("Enter your custom question/prompt", since=m)
-            m = client.send_and_mark("multi_line_1\nmulti_line_2\n\x04", delay_after=0.15)
+            m = client.send_and_mark(
+                "multi_line_1\nmulti_line_2\n\x04", delay_after=0.15
+            )
             # 4) prompter.sh resolves {{file:lines=...}}, {{file}}, then {{file_path}} in that order
             for hdr in (
                 "Select a file to insert (lines 2-3):",
@@ -589,7 +636,9 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             out0 = tmp / "p05_choose.txt"
             start_cat_capture(p0, out0)
             m = open_popup_and_pick("E2E Cross Pane Logs")
-            client.fzf_pick(p1, header_wait="Select a pane to import logs from:", since=m)
+            client.fzf_pick(
+                p1, header_wait="Select a pane to import logs from:", since=m
+            )
             text = finish_cat_capture(p0, out0)
             assert "-imported-logs:" in text, text
             assert "OTHER_PANE_LOG_99" in text, text
@@ -645,8 +694,14 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             client.fzf_pick("HISTORY_PAYLOAD_ALPHA", header_wait="History>", since=m)
             re_text = finish_cat_capture(p0, out_re)
             assert "HISTORY_PAYLOAD_ALPHA" in re_text, re_text
-            top_hist = (cfg_dir / "prompter_history.txt").read_text(encoding="utf-8").splitlines()[0]
-            assert "HISTORY_PAYLOAD_ALPHA" in top_hist, f"Not promoted to top: {top_hist}"
+            top_hist = (
+                (cfg_dir / "prompter_history.txt")
+                .read_text(encoding="utf-8")
+                .splitlines()[0]
+            )
+            assert "HISTORY_PAYLOAD_ALPHA" in top_hist, (
+                f"Not promoted to top: {top_hist}"
+            )
 
         def case_07_template_management_and_tty_recovery() -> None:
             # 1) Subfolder template works
@@ -654,18 +709,26 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             start_cat_capture(p0, out_sub)
             open_popup_and_pick("E2E Subfolder Review")
             sub_text = finish_cat_capture(p0, out_sub)
-            assert "SUBFOLDER_OK feat/e2e-check" in sub_text, f"Subfolder output mismatch: {sub_text!r}"
+            assert "SUBFOLDER_OK feat/e2e-check" in sub_text, (
+                f"Subfolder output mismatch: {sub_text!r}"
+            )
 
             # 2) Edit Templates -> Create -> Reload -> Ctrl-D N (keep) -> Ctrl-D y (delete) -> Esc
             m = open_popup_and_pick("Edit Templates")
-            m = client.fzf_pick("Create New Template", header_wait="[Enter] Edit", since=m)
+            m = client.fzf_pick(
+                "Create New Template", header_wait="[Enter] Edit", since=m
+            )
             client.wait_for("Enter new template title", since=m)
             m = client.send_and_mark("Dynamic Created Tpl\r", delay_after=0.25)
 
             # Editor adds CREATED_BY_E2E_EDITOR and exits -> returns to main Templates> menu
             created_md = cfg_dir / "templates" / "dynamic-created-tpl.md"
             wait_for_condition(
-                lambda: created_md.exists() and "CREATED_BY_E2E_EDITOR" in created_md.read_text(encoding="utf-8"),
+                lambda: (
+                    created_md.exists()
+                    and "CREATED_BY_E2E_EDITOR"
+                    in created_md.read_text(encoding="utf-8")
+                ),
                 desc="created template modified by editor",
             )
 
@@ -685,14 +748,18 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             m = client.send_and_mark("\x04", delay_after=0.1)
             client.wait_for("Delete template", since=m)
             m = client.send_and_mark("y\r", delay_after=0.2)
-            wait_for_condition(lambda: not created_md.exists(), desc="template deleted on y")
+            wait_for_condition(
+                lambda: not created_md.exists(), desc="template deleted on y"
+            )
 
             # After deletion, prompter loops back to main Templates> -> Esc exits
             client.wait_for("Templates>", since=m, settle=0.15)
             client.send("\x1b", delay_after=0.25)
 
             # 3) E-02: Killed editor does not break TTY / fzf recovery
-            sock_str = tmux("display-message", "-p", "#{socket_path},#{pid},0").stdout.strip()
+            sock_str = tmux(
+                "display-message", "-p", "#{socket_path},#{pid},0"
+            ).stdout.strip()
             e2_pty = PTYController(
                 ["bash", str(PROMPTER_SCRIPT)],
                 env={
@@ -707,7 +774,9 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             )
             try:
                 m = e2_pty.fzf_pick("Edit Templates", header_wait="Templates>", since=0)
-                m = e2_pty.fzf_pick("E2E Safe Symbols", header_wait="[Enter] Edit", since=m)
+                m = e2_pty.fzf_pick(
+                    "E2E Safe Symbols", header_wait="[Enter] Edit", since=m
+                )
                 # After SIGKILL, prompter loops back and renders Templates> cleanly on intact TTY
                 e2_pty.wait_for("Templates>", since=m, timeout=8.0, settle=0.1)
                 e2_pty.send("\x1b", delay_after=0.1)
@@ -719,13 +788,20 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
         def case_08_fullscreen_tui_and_backend_override() -> None:
             # Open full-screen `less` inside p0, inject via MUX_BACKEND=tmux without hang
             sample_view = tmp / "view_file.txt"
-            sample_view.write_text("LESS_SCREEN_TOP\n" + "\n".join(f"line {i}" for i in range(60)), encoding="utf-8")
+            sample_view.write_text(
+                "LESS_SCREEN_TOP\n" + "\n".join(f"line {i}" for i in range(60)),
+                encoding="utf-8",
+            )
             tmux("send-keys", "-t", p0, f"less '{sample_view}'", "Enter")
             wait_for_condition(
-                lambda: "LESS_SCREEN_TOP" in tmux("capture-pane", "-t", p0, "-p").stdout,
+                lambda: (
+                    "LESS_SCREEN_TOP" in tmux("capture-pane", "-t", p0, "-p").stdout
+                ),
                 desc="less started in p0",
             )
-            sock_str = tmux("display-message", "-p", "#{socket_path},#{pid},0").stdout.strip()
+            sock_str = tmux(
+                "display-message", "-p", "#{socket_path},#{pid},0"
+            ).stdout.strip()
             e1_pty = PTYController(
                 ["bash", str(PROMPTER_SCRIPT)],
                 env={
@@ -758,14 +834,38 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
                 time.sleep(0.05)
 
         for name, fn in (
-            ("TMUX-E2E-01 (Popup bind, !No-Auto-Enter, Multibyte & Symbols)", case_01_bang_and_symbols),
-            ("TMUX-E2E-02 (Git unstaged/staged diff, status, branch)", case_02_git_context),
-            ("TMUX-E2E-03 (ANSI strip, error extract, manual fallback)", case_03_logs_errors_and_manual_fallback),
-            ("TMUX-E2E-04 (_vars.txt fzf, {{input}}, {{file}} / lines)", case_04_vars_files_input),
-            ("TMUX-E2E-05 ({{pane:choose}} & {{panes:choose}} broadcast)", case_05_cross_pane_and_broadcast),
-            ("TMUX-E2E-06 (Ctrl-R/A/T views, History reuse, Esc cancel)", case_06_views_history_and_cancel),
-            ("TMUX-E2E-07 (Subfolder, Edit Create/Delete/Keep, E-02 TTY)", case_07_template_management_and_tty_recovery),
-            ("TMUX-E2E-08 (Full-screen TUI target, MUX_BACKEND=tmux)", case_08_fullscreen_tui_and_backend_override),
+            (
+                "TMUX-E2E-01 (Popup bind, !No-Auto-Enter, Multibyte & Symbols)",
+                case_01_bang_and_symbols,
+            ),
+            (
+                "TMUX-E2E-02 (Git unstaged/staged diff, status, branch)",
+                case_02_git_context,
+            ),
+            (
+                "TMUX-E2E-03 (ANSI strip, error extract, manual fallback)",
+                case_03_logs_errors_and_manual_fallback,
+            ),
+            (
+                "TMUX-E2E-04 (_vars.txt fzf, {{input}}, {{file}} / lines)",
+                case_04_vars_files_input,
+            ),
+            (
+                "TMUX-E2E-05 ({{pane:choose}} & {{panes:choose}} broadcast)",
+                case_05_cross_pane_and_broadcast,
+            ),
+            (
+                "TMUX-E2E-06 (Ctrl-R/A/T views, History reuse, Esc cancel)",
+                case_06_views_history_and_cancel,
+            ),
+            (
+                "TMUX-E2E-07 (Subfolder, Edit Create/Delete/Keep, E-02 TTY)",
+                case_07_template_management_and_tty_recovery,
+            ),
+            (
+                "TMUX-E2E-08 (Full-screen TUI target, MUX_BACKEND=tmux)",
+                case_08_fullscreen_tui_and_backend_override,
+            ),
         ):
             stats.run_case(name, fn)
             case_failed = bool(stats.results) and stats.results[-1][0] == "FAIL"
@@ -773,13 +873,19 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
     finally:
         if client is not None:
             client.close()
-        subprocess.run(["tmux", "-L", sock, "kill-server"], capture_output=True, env=base_env)
+        subprocess.run(
+            ["tmux", "-L", sock, "kill-server"],
+            check=False,
+            capture_output=True,
+            env=base_env,
+        )
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
 # Zellij E2E Suite
 # ---------------------------------------------------------------------------
+
 
 def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
     if not shutil.which("zellij"):
@@ -803,12 +909,13 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
     def zj(*args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["zellij", "--session", sess, *args],
+            check=False,
             capture_output=True,
             text=True,
             env=env,
         )
 
-    client: Optional[PTYController] = None
+    client: PTYController | None = None
     try:
         client = PTYController(
             ["zellij", "--config", str(cfg_kdl), "--session", sess],
@@ -818,7 +925,7 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
         )
 
         # Wait for session responsiveness & Tab 1 terminal pane
-        panes: List[dict] = []
+        panes: list[dict] = []
         deadline = time.monotonic() + 10.0
         while time.monotonic() < deadline:
             client.drain(0.08)
@@ -834,26 +941,53 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
         t1_pane = f"terminal_{panes[0]['id']}"
 
         # Create Tab 2 in other_dir
-        assert zj("action", "new-tab", "--name", "OtherTab", "--cwd", str(other_dir)).returncode == 0
+        assert (
+            zj(
+                "action", "new-tab", "--name", "OtherTab", "--cwd", str(other_dir)
+            ).returncode
+            == 0
+        )
         time.sleep(0.4)
         client.drain(0.05)
         panes2 = json.loads(zj("action", "list-panes", "--all", "--json").stdout)
-        t2_list = [p for p in panes2 if not p["is_plugin"] and p.get("tab_name") == "OtherTab"]
+        t2_list = [
+            p for p in panes2 if not p["is_plugin"] and p.get("tab_name") == "OtherTab"
+        ]
         assert t2_list, f"OtherTab pane not created: {panes2}"
         t2_pane = f"terminal_{t2_list[0]['id']}"
 
         # Set clean prompt with ignoreeof in both tabs & emit log line in Tab 2
         for pid in (t1_pane, t2_pane):
-            zj("action", "paste", "--pane-id", pid, "--", "set -o ignoreeof; PS1='READY> '")
+            zj(
+                "action",
+                "paste",
+                "--pane-id",
+                pid,
+                "--",
+                "set -o ignoreeof; PS1='READY> '",
+            )
             zj("action", "send-keys", "--pane-id", pid, "Enter")
         wait_for_condition(
-            lambda: "READY>" in zj("action", "dump-screen", "--pane-id", t2_pane, "--full").stdout,
+            lambda: (
+                "READY>"
+                in zj("action", "dump-screen", "--pane-id", t2_pane, "--full").stdout
+            ),
             desc="Zellij Tab 2 prompt",
         )
-        zj("action", "paste", "--pane-id", t2_pane, "--", "printf '\\033[31mTAB2_ZELLIJ_ERR_77\\033[0m\\n'")
+        zj(
+            "action",
+            "paste",
+            "--pane-id",
+            t2_pane,
+            "--",
+            "printf '\\033[31mTAB2_ZELLIJ_ERR_77\\033[0m\\n'",
+        )
         zj("action", "send-keys", "--pane-id", t2_pane, "Enter")
         wait_for_condition(
-            lambda: "TAB2_ZELLIJ_ERR_77" in zj("action", "dump-screen", "--pane-id", t2_pane, "--full").stdout,
+            lambda: (
+                "TAB2_ZELLIJ_ERR_77"
+                in zj("action", "dump-screen", "--pane-id", t2_pane, "--full").stdout
+            ),
             desc="Zellij Tab 2 log line",
         )
 
@@ -887,7 +1021,10 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
                 "-c",
                 f"HERDR_PLUGIN_CONFIG_DIR='{cfg_dir}' bash '{PROMPTER_SCRIPT}' --preview-only 'E2E Git Context' > '{out_file}'",
             )
-            wait_for_condition(lambda: out_file.exists() and out_file.stat().st_size > 0, desc="zj preview output")
+            wait_for_condition(
+                lambda: out_file.exists() and out_file.stat().st_size > 0,
+                desc="zj preview output",
+            )
             text = out_file.read_text(encoding="utf-8")
             assert "BR=feat/e2e-check" in text, text
             assert "UNSTAGED_E2E_LINE" in text, text
@@ -895,24 +1032,49 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
         def case_02_floating_cross_tab_choose() -> None:
             # Capture Tab 1 (caller pane) payload cleanly with non-canonical cat
             t1_out = tmp / "zj_t1_cap.txt"
-            zj("action", "paste", "--pane-id", t1_pane, "--", f"stty -echo -icanon min 1 time 0; cat > '{t1_out}'; stty sane")
+            zj(
+                "action",
+                "paste",
+                "--pane-id",
+                t1_pane,
+                "--",
+                f"stty -echo -icanon min 1 time 0; cat > '{t1_out}'; stty sane",
+            )
             zj("action", "send-keys", "--pane-id", t1_pane, "Enter")
             time.sleep(0.25)
 
             m = client.mark()
             done_flag = launch_floating_prompter()
-            m = client.fzf_pick("E2E Cross Pane Logs", header_wait="Templates>", since=m)
-            client.fzf_pick("OtherTab", header_wait="Select a pane to import logs from:", since=m)
+            m = client.fzf_pick(
+                "E2E Cross Pane Logs", header_wait="Templates>", since=m
+            )
+            client.fzf_pick(
+                "OtherTab", header_wait="Select a pane to import logs from:", since=m
+            )
 
-            wait_for_condition(lambda: done_flag.exists(), timeout=10.0, desc="zj floating exit")
-            wait_for_condition(lambda: t1_out.exists() and t1_out.stat().st_size > 0, desc="zj tab1 paste")
+            wait_for_condition(
+                lambda: done_flag.exists(), timeout=10.0, desc="zj floating exit"
+            )
+            wait_for_condition(
+                lambda: t1_out.exists() and t1_out.stat().st_size > 0,
+                desc="zj tab1 paste",
+            )
             time.sleep(0.25)
             zj("action", "send-keys", "--pane-id", t1_pane, "Ctrl c")
             wait_for_condition(
-                lambda: "READY>" in (
-                    [ln for ln in zj("action", "dump-screen", "--pane-id", t1_pane, "--full").stdout.splitlines() if ln.strip()]
-                    or [""]
-                )[-1],
+                lambda: (
+                    "READY>"
+                    in (
+                        [
+                            ln
+                            for ln in zj(
+                                "action", "dump-screen", "--pane-id", t1_pane, "--full"
+                            ).stdout.splitlines()
+                            if ln.strip()
+                        ]
+                        or [""]
+                    )[-1]
+                ),
                 desc="Tab 1 shell restored",
             )
             captured = t1_out.read_text(encoding="utf-8", errors="replace")
@@ -924,22 +1086,38 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
             b1_out = tmp / "zj_b1.txt"
             b2_out = tmp / "zj_b2.txt"
             for pid, out_p in ((t1_pane, b1_out), (t2_pane, b2_out)):
-                zj("action", "paste", "--pane-id", pid, "--", f"stty -echo -icanon min 1 time 0; cat > '{out_p}'; stty sane")
+                zj(
+                    "action",
+                    "paste",
+                    "--pane-id",
+                    pid,
+                    "--",
+                    f"stty -echo -icanon min 1 time 0; cat > '{out_p}'; stty sane",
+                )
                 zj("action", "send-keys", "--pane-id", pid, "Enter")
             time.sleep(0.3)
 
             m = client.mark()
             done_flag = launch_floating_prompter("MUX_BACKEND=zellij ")
-            m = client.fzf_pick("E2E Broadcast Panes", header_wait="Templates>", since=m)
+            m = client.fzf_pick(
+                "E2E Broadcast Panes", header_wait="Templates>", since=m
+            )
             client.wait_for("Select target panes for broadcast", since=m, settle=0.15)
             client.wait_for("OtherTab", since=m, settle=0.1)
             client.send("\t", delay_after=0.12)
             client.send("\t", delay_after=0.12)
             client.send("\r", delay_after=0.15)
-            wait_for_condition(lambda: done_flag.exists(), timeout=10.0, desc="zj broadcast floating exit")
+            wait_for_condition(
+                lambda: done_flag.exists(),
+                timeout=10.0,
+                desc="zj broadcast floating exit",
+            )
 
             for pid, out_p in ((t1_pane, b1_out), (t2_pane, b2_out)):
-                wait_for_condition(lambda p=out_p: p.exists() and p.stat().st_size > 0, desc=f"broadcast {out_p.name}")
+                wait_for_condition(
+                    lambda p=out_p: p.exists() and p.stat().st_size > 0,
+                    desc=f"broadcast {out_p.name}",
+                )
                 time.sleep(0.25)
                 zj("action", "send-keys", "--pane-id", pid, "Ctrl c")
             time.sleep(0.3)
@@ -951,16 +1129,24 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
                 [
                     "bash",
                     "-c",
-                    f"eval \"$(sed '/^# Main selection and execution loop/,$d' '{PROMPTER_SCRIPT}')\"\n"
-                    f"mux_run_command '{t2_pane}' 'echo ZJ_RUN_CMD_OK'\n",
+                    (
+                        f"eval \"$(sed '/^# Main selection and execution loop/,$d' '{PROMPTER_SCRIPT}')\"\n"
+                        f"mux_run_command '{t2_pane}' 'echo ZJ_RUN_CMD_OK'\n"
+                    ),
                 ],
+                check=False,
                 env={**env, "ZELLIJ_SESSION_NAME": sess, "MUX_BACKEND": "zellij"},
                 capture_output=True,
                 text=True,
             )
             assert r.returncode == 0, r.stderr
             wait_for_condition(
-                lambda: "ZJ_RUN_CMD_OK" in zj("action", "dump-screen", "--pane-id", t2_pane, "--full").stdout,
+                lambda: (
+                    "ZJ_RUN_CMD_OK"
+                    in zj(
+                        "action", "dump-screen", "--pane-id", t2_pane, "--full"
+                    ).stdout
+                ),
                 desc="mux_run_command executed in Tab 2",
             )
 
@@ -970,28 +1156,48 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
             done_flag = launch_floating_prompter()
             client.wait_for("Templates>", since=m, settle=0.15)
             client.send("\x1b", delay_after=0.15)
-            wait_for_condition(lambda: done_flag.exists(), timeout=8.0, desc="zj esc exit")
+            wait_for_condition(
+                lambda: done_flag.exists(), timeout=8.0, desc="zj esc exit"
+            )
             assert done_flag.read_text(encoding="utf-8").strip() == "0"
             after = zj("action", "dump-screen", "--pane-id", t1_pane, "--full").stdout
             assert before == after, "Esc cancel modified target pane"
 
         for name, fn in (
-            ("ZELLIJ-E2E-01 (Floating active-tab caller pane & cwd resolution)", case_01_active_tab_and_cwd),
-            ("ZELLIJ-E2E-02 (Real fzf cross-tab dump-screen & paste --)", case_02_floating_cross_tab_choose),
-            ("ZELLIJ-E2E-03 (Real fzf -m broadcast & mux_run_command)", case_03_cross_tab_broadcast_and_run_command),
-            ("ZELLIJ-E2E-04 (Floating Esc cancel leaves target untouched)", case_04_esc_cancel),
+            (
+                "ZELLIJ-E2E-01 (Floating active-tab caller pane & cwd resolution)",
+                case_01_active_tab_and_cwd,
+            ),
+            (
+                "ZELLIJ-E2E-02 (Real fzf cross-tab dump-screen & paste --)",
+                case_02_floating_cross_tab_choose,
+            ),
+            (
+                "ZELLIJ-E2E-03 (Real fzf -m broadcast & mux_run_command)",
+                case_03_cross_tab_broadcast_and_run_command,
+            ),
+            (
+                "ZELLIJ-E2E-04 (Floating Esc cancel leaves target untouched)",
+                case_04_esc_cancel,
+            ),
         ):
             stats.run_case(name, fn)
     finally:
         if client is not None:
             client.close()
-        subprocess.run(["zellij", "delete-session", "--force", sess], capture_output=True, env=env)
+        subprocess.run(
+            ["zellij", "delete-session", "--force", sess],
+            check=False,
+            capture_output=True,
+            env=env,
+        )
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
 # Herdr E2E Suite
 # ---------------------------------------------------------------------------
+
 
 def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
     if not shutil.which("herdr"):
@@ -1018,12 +1224,18 @@ def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
     )
 
     # Hard isolation guard: never connect to a live Herdr host socket/session
-    for forbidden in ("HERDR_SOCKET_PATH", "HERDR_SESSION", "HERDR_CONFIG_PATH", "HERDR_ENV"):
+    for forbidden in (
+        "HERDR_SOCKET_PATH",
+        "HERDR_SESSION",
+        "HERDR_CONFIG_PATH",
+        "HERDR_ENV",
+    ):
         assert forbidden not in env, f"Unsafe inherited env var {forbidden}"
 
     def hd(*args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         res = subprocess.run(
             ["herdr", *args],
+            check=False,
             capture_output=True,
             text=True,
             env=env,
@@ -1060,19 +1272,36 @@ def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
                 ready = True
                 break
             if srv.poll() is not None:
-                raise AssertionError(f"herdr server exited prematurely: {srv.stderr.read()}")
+                raise AssertionError(
+                    f"herdr server exited prematurely: {srv.stderr.read()}"
+                )
             time.sleep(0.15)
         assert ready, "Timed out waiting for isolated herdr server"
 
-        panes_data = json.loads(hd("pane", "list").stdout).get("result", {}).get("panes", [])
+        panes_data = (
+            json.loads(hd("pane", "list").stdout).get("result", {}).get("panes", [])
+        )
         if not panes_data:
-            ws_res = json.loads(hd("workspace", "create", "--cwd", str(ws_dir), "--label", "E2EWS").stdout)
+            ws_res = json.loads(
+                hd(
+                    "workspace", "create", "--cwd", str(ws_dir), "--label", "E2EWS"
+                ).stdout
+            )
             _ = ws_res
             panes_data = json.loads(hd("pane", "list").stdout)["result"]["panes"]
 
         p0 = panes_data[0]["pane_id"]
         split_res = json.loads(
-            hd("pane", "split", p0, "--direction", "right", "--cwd", str(other_dir), "--no-focus").stdout
+            hd(
+                "pane",
+                "split",
+                p0,
+                "--direction",
+                "right",
+                "--cwd",
+                str(other_dir),
+                "--no-focus",
+            ).stdout
         )
         p1 = split_res["result"]["pane"]["pane_id"]
 
@@ -1081,13 +1310,19 @@ def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
         for pid in (p0, p1):
             hd("pane", "run", pid, "set -o ignoreeof; PS1='READY> '")
             wait_for_condition(
-                lambda id_=pid: "READY>" in hd("pane", "read", id_, "--lines", "20", check=False).stdout,
+                lambda id_=pid: (
+                    "READY>"
+                    in hd("pane", "read", id_, "--lines", "20", check=False).stdout
+                ),
                 desc=f"Herdr pane {pid} prompt",
             )
 
         hd("pane", "run", p1, "printf '\\033[31mHERDR_PANE2_ERR_88\\033[0m\\n'")
         wait_for_condition(
-            lambda: "HERDR_PANE2_ERR_88" in hd("pane", "read", p1, "--lines", "30", check=False).stdout,
+            lambda: (
+                "HERDR_PANE2_ERR_88"
+                in hd("pane", "read", p1, "--lines", "30", check=False).stdout
+            ),
             desc="Herdr p1 error log",
         )
 
@@ -1101,30 +1336,53 @@ def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
 
         def case_01_logs_git_and_choose() -> None:
             out_p0 = tmp / "hd_p0_cap.txt"
-            hd("pane", "run", p0, f"stty -echo -icanon min 1 time 0; cat > '{out_p0}'; stty sane")
+            hd(
+                "pane",
+                "run",
+                p0,
+                f"stty -echo -icanon min 1 time 0; cat > '{out_p0}'; stty sane",
+            )
             time.sleep(0.25)
 
             p = PTYController(
                 ["bash", str(PROMPTER_SCRIPT)],
-                env={**env, "HERDR_PLUGIN_CONTEXT_JSON": ctx_json, "MUX_BACKEND": "herdr"},
+                env={
+                    **env,
+                    "HERDR_PLUGIN_CONTEXT_JSON": ctx_json,
+                    "MUX_BACKEND": "herdr",
+                },
                 cwd=str(ws_dir),
                 verbose=verbose,
             )
             try:
                 m = p.fzf_pick("E2E Cross Pane Logs", header_wait="Templates>", since=0)
-                p.fzf_pick(p1, header_wait="Select a pane to import logs from:", since=m)
+                p.fzf_pick(
+                    p1, header_wait="Select a pane to import logs from:", since=m
+                )
                 assert p.wait_exit(timeout=8.0) == 0
             finally:
                 p.close()
 
-            wait_for_condition(lambda: out_p0.exists() and out_p0.stat().st_size > 0, desc="Herdr p0 cat capture")
+            wait_for_condition(
+                lambda: out_p0.exists() and out_p0.stat().st_size > 0,
+                desc="Herdr p0 cat capture",
+            )
             time.sleep(0.25)
             hd("pane", "send-keys", p0, "ctrl+c")
             wait_for_condition(
-                lambda: "READY>" in (
-                    [ln for ln in hd("pane", "read", p0, "--lines", "20", check=False).stdout.splitlines() if ln.strip()]
-                    or [""]
-                )[-1],
+                lambda: (
+                    "READY>"
+                    in (
+                        [
+                            ln
+                            for ln in hd(
+                                "pane", "read", p0, "--lines", "20", check=False
+                            ).stdout.splitlines()
+                            if ln.strip()
+                        ]
+                        or [""]
+                    )[-1]
+                ),
                 desc="Herdr p0 shell prompt return",
             )
             captured = out_p0.read_text(encoding="utf-8", errors="replace")
@@ -1136,7 +1394,12 @@ def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
             out0 = tmp / "hd_b0.txt"
             out1 = tmp / "hd_b1.txt"
             for pid, op in ((p0, out0), (p1, out1)):
-                hd("pane", "run", pid, f"stty -echo -icanon min 1 time 0; cat > '{op}'; stty sane")
+                hd(
+                    "pane",
+                    "run",
+                    pid,
+                    f"stty -echo -icanon min 1 time 0; cat > '{op}'; stty sane",
+                )
             time.sleep(0.3)
 
             p = PTYController(
@@ -1157,37 +1420,47 @@ def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
                 p.close()
 
             for pid, op in ((p0, out0), (p1, out1)):
-                wait_for_condition(lambda file_p=op: file_p.exists() and file_p.stat().st_size > 0, desc=f"Herdr {op.name}")
+                wait_for_condition(
+                    lambda file_p=op: file_p.exists() and file_p.stat().st_size > 0,
+                    desc=f"Herdr {op.name}",
+                )
                 time.sleep(0.25)
                 hd("pane", "send-keys", pid, "ctrl+c")
             time.sleep(0.3)
             assert "-broadcast-msg" in out0.read_text(encoding="utf-8")
             assert "-broadcast-msg" in out1.read_text(encoding="utf-8")
 
-        stats.run_case("HERDR-E2E-01 (Isolated server, real fzf, cross-pane read & send-text)", case_01_logs_git_and_choose)
-        stats.run_case("HERDR-E2E-02 (Herdr auto-detect & multi-pane broadcast)", case_02_broadcast)
+        stats.run_case(
+            "HERDR-E2E-01 (Isolated server, real fzf, cross-pane read & send-text)",
+            case_01_logs_git_and_choose,
+        )
+        stats.run_case(
+            "HERDR-E2E-02 (Herdr auto-detect & multi-pane broadcast)", case_02_broadcast
+        )
     finally:
         # Terminate only our isolated server process group; never invoke global `herdr server stop`
         try:
             os.killpg(srv.pid, signal.SIGTERM)
             srv.wait(timeout=3.0)
-        except Exception:
-            try:
+        except (subprocess.SubprocessError, OSError):
+            with suppress(OSError):
                 os.killpg(srv.pid, signal.SIGKILL)
-            except Exception:
-                pass
         shutil.rmtree(tmp, ignore_errors=True)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run mux-prompter real multiplexer E2E tests.")
+    parser = argparse.ArgumentParser(
+        description="Run mux-prompter real multiplexer E2E tests."
+    )
     parser.add_argument(
         "--backend",
         choices=("all", "tmux", "zellij", "herdr"),
         default="all",
         help="Target multiplexer backend suite to execute.",
     )
-    parser.add_argument("--verbose", action="store_true", help="Stream stripped PTY output to stderr.")
+    parser.add_argument(
+        "--verbose", action="store_true", help="Stream stripped PTY output to stderr."
+    )
     args = parser.parse_args()
 
     for req in ("fzf", "jq", "git", "bash"):
@@ -1204,7 +1477,7 @@ def main() -> int:
         if args.backend in ("all", bname):
             try:
                 runner(stats, args.verbose)
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 stats.record("FAIL", f"{bname.upper()}-E2E-SETUP", str(exc))
 
     return stats.summary()
