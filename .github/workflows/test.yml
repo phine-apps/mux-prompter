@@ -23,4 +23,4 @@ jobs:
 
       - name: Run test suite
         run: |
-          bats tests/test_prompter.bats
+          bats --print-output-on-failure tests/test_prompter.bats
