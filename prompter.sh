@@ -646,8 +646,7 @@ load_templates() {
     done
     local display_title="$t"
     if [ "$dup_count" -gt 1 ]; then
-      local rel_p
-      rel_p=$(echo "$p" | sed "s|^${TEMPLATES_DIR}/||")
+      local rel_p="${p#"${TEMPLATES_DIR}/"}"
       display_title="${t} (${rel_p})"
     fi
     TEMPLATES_TITLES+=("$display_title")
@@ -941,11 +940,14 @@ choose_git_commit() {
     echo "No git commits found." >&2
     return 1
   fi
-  local selected_line
+  local preview_cmd selected_line
+  # fzf preview evaluates $1 in a subshell
+  # shellcheck disable=SC2016
+  preview_cmd='bash -c '\''git --no-pager show --stat --color=always "$1" 2>/dev/null; echo "---"; git --no-pager show --color=always "$1" 2>/dev/null | head -n 80'\'' _ {1}'
   selected_line=$(printf '%s\n' "$commits" | fzf \
     --layout=reverse \
     --header="Select a git commit:" \
-    --preview='bash -c '\''git --no-pager show --stat --color=always "$1" 2>/dev/null; echo "---"; git --no-pager show --color=always "$1" 2>/dev/null | head -n 80'\'' _ {1}' \
+    --preview="$preview_cmd" \
     --preview-window=right:50%:wrap)
   if [ -z "$selected_line" ]; then
     echo "Cancelled git commit selection." >&2
@@ -1099,10 +1101,14 @@ resolve_placeholders() {
         echo "No git branches found." >&2
         exit 0
       fi
+      local preview_cmd
+      # fzf preview evaluates $1 in a subshell
+      # shellcheck disable=SC2016
+      preview_cmd='bash -c '\''git --no-pager log -n 20 --oneline --graph --decorate --color=always "$1" 2>/dev/null'\'' _ {}'
       branch_val=$(printf '%s\n' "$branches" | fzf \
         --layout=reverse \
         --header="Select a git branch:" \
-        --preview='bash -c '\''git --no-pager log -n 20 --oneline --graph --decorate --color=always "$1" 2>/dev/null'\'' _ {}' \
+        --preview="$preview_cmd" \
         --preview-window=right:50%:wrap)
       if [ -z "$branch_val" ]; then
         echo "Cancelled git branch selection." >&2
@@ -1177,10 +1183,14 @@ resolve_placeholders() {
         echo "No changed files found." >&2
         exit 0
       fi
+      local preview_cmd
+      # fzf preview evaluates variables and $1 in a subshell
+      # shellcheck disable=SC2016
+      preview_cmd='bash -c '\''root="$PROMPTER_GIT_ROOT"; f="$1"; d=$(git --no-pager -C "$root" diff -- "$f" 2>/dev/null); dc=$(git --no-pager -C "$root" diff --cached -- "$f" 2>/dev/null); if [ -n "$d" ] || [ -n "$dc" ]; then [ -n "$dc" ] && echo "=== Staged ===" && printf "%s\n" "$dc"; [ -n "$d" ] && echo "=== Unstaged ===" && printf "%s\n" "$d"; elif [ -f "$root/$f" ]; then head -n 60 "$root/$f"; else echo "(deleted or missing)"; fi'\'' _ {}'
       changed_file_val=$(printf '%s\n' "$changed_files" | PROMPTER_GIT_ROOT="$git_root" fzf \
         --layout=reverse \
         --header="Select a changed file:" \
-        --preview='bash -c '\''root="$PROMPTER_GIT_ROOT"; f="$1"; d=$(git --no-pager -C "$root" diff -- "$f" 2>/dev/null); dc=$(git --no-pager -C "$root" diff --cached -- "$f" 2>/dev/null); if [ -n "$d" ] || [ -n "$dc" ]; then [ -n "$dc" ] && echo "=== Staged ===" && printf "%s\n" "$dc"; [ -n "$d" ] && echo "=== Unstaged ===" && printf "%s\n" "$d"; elif [ -f "$root/$f" ]; then head -n 60 "$root/$f"; else echo "(deleted or missing)"; fi'\'' _ {}' \
+        --preview="$preview_cmd" \
         --preview-window=right:50%:wrap)
       if [ -z "$changed_file_val" ]; then
         echo "Cancelled changed file selection." >&2
@@ -1246,13 +1256,16 @@ resolve_placeholders() {
         exit 0
       fi
 
-      local selected_wt_line
+      local preview_cmd selected_wt_line
+      # fzf preview evaluates $1 in a subshell
+      # shellcheck disable=SC2016
+      preview_cmd='bash -c '\''if [ -d "$1" ]; then git --no-pager -C "$1" status -sb 2>/dev/null || echo "(bare repository)"; echo "---"; git --no-pager -C "$1" log -n 5 --oneline --decorate 2>/dev/null; else echo "(directory missing)"; fi'\'' _ {2}'
       selected_wt_line=$(printf '%s\n' "$wt_options" | fzf \
         --layout=reverse \
         --delimiter=$'\t' \
         --with-nth=1 \
         --header="Select a git worktree:" \
-        --preview='bash -c '\''if [ -d "$1" ]; then git --no-pager -C "$1" status -sb 2>/dev/null || echo "(bare repository)"; echo "---"; git --no-pager -C "$1" log -n 5 --oneline --decorate 2>/dev/null; else echo "(directory missing)"; fi'\'' _ {2}' \
+        --preview="$preview_cmd" \
         --preview-window=right:50%:wrap)
 
       if [ -n "$selected_wt_line" ]; then
