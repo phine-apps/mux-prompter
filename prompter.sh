@@ -557,9 +557,29 @@ Please review the following git changes:
 ```
 EOF
 
+  cat << 'EOF' > "${TEMPLATES_DIR}/review-branch-changes.md"
+# Review Branch Changes
+Please review the changes on branch `{{git_branch}}`.
+
+Commits:
+```
+{{git_log:branch}}
+```
+
+Diff:
+```
+{{git_diff:branch}}
+```
+EOF
+
   cat << 'EOF' > "${TEMPLATES_DIR}/ask-custom-question.md"
 # Ask Custom Question
 {{input}}
+EOF
+
+  cat << 'EOF' > "${TEMPLATES_DIR}/cd-worktree.md"
+# CD to Git Worktree
+cd "{{git_worktree}}"
 EOF
 
   cat << 'EOF' > "$VARS_FILE"
@@ -735,6 +755,204 @@ get_clipboard_text() {
   fi
 }
 
+# Detect a base branch (main/master/develop/trunk or origin/HEAD) different from current branch
+resolve_git_base_branch() {
+  local current_branch
+  current_branch=$(safe_git branch --show-current 2>/dev/null)
+
+  local origin_head
+  origin_head=$(safe_git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)
+  if [ -n "$origin_head" ]; then
+    local origin_short="${origin_head#origin/}"
+    if [ "$origin_short" != "$current_branch" ] && safe_git show-ref --verify --quiet "refs/heads/${origin_short}"; then
+      echo "$origin_short"
+      return 0
+    fi
+    if [ "$origin_short" != "$current_branch" ] || [ "$(safe_git rev-parse HEAD 2>/dev/null)" != "$(safe_git rev-parse "$origin_head" 2>/dev/null)" ]; then
+      echo "$origin_head"
+      return 0
+    fi
+  fi
+
+  local candidate
+  for candidate in main master develop trunk; do
+    if [ "$candidate" != "$current_branch" ] && safe_git show-ref --verify --quiet "refs/heads/${candidate}"; then
+      echo "$candidate"
+      return 0
+    fi
+  done
+
+  for candidate in origin/main origin/master origin/develop; do
+    if safe_git show-ref --verify --quiet "refs/remotes/${candidate}"; then
+      if [ "${candidate#origin/}" != "$current_branch" ] || [ "$(safe_git rev-parse HEAD 2>/dev/null)" != "$(safe_git rev-parse "$candidate" 2>/dev/null)" ]; then
+        echo "$candidate"
+        return 0
+      fi
+    fi
+  done
+
+  return 1
+}
+
+# Resolve git diff with unified 25-line preview truncation
+resolve_git_diff_value() {
+  local empty_msg="$1"
+  local is_preview="$2"
+  shift 2
+
+  local diff_full
+  diff_full=$(safe_git diff "$@" 2>/dev/null)
+  if [ "$is_preview" == "true" ]; then
+    if [ -z "$diff_full" ]; then
+      printf '%s' "$empty_msg"
+      return 0
+    fi
+    local line_count
+    line_count=$(printf '%s\n' "$diff_full" | wc -l)
+    if [ "$line_count" -gt 25 ]; then
+      printf '%s\n...(truncated for preview)' "$(printf '%s\n' "$diff_full" | head -n 25)"
+    else
+      printf '%s' "$diff_full"
+    fi
+  else
+    printf '%s' "$diff_full"
+  fi
+}
+
+# Extract conflict hunks (with context) from all conflicted files
+extract_git_conflicts() {
+  local is_preview="$1"
+  if ! safe_git rev-parse --is-inside-work-tree &>/dev/null; then
+    printf '%s' "Not a git repository"
+    return 0
+  fi
+
+  local git_root
+  git_root=$(safe_git rev-parse --show-toplevel 2>/dev/null)
+  local conflict_files=()
+  while IFS= read -r -d '' rel_file; do
+    [ -n "$rel_file" ] && conflict_files+=("$rel_file")
+  done < <(safe_git diff --name-only --diff-filter=U -z 2>/dev/null)
+
+  if [ "${#conflict_files[@]}" -eq 0 ]; then
+    printf '%s' "No git merge conflicts detected"
+    return 0
+  fi
+
+  local out=""
+  for rel_file in "${conflict_files[@]}"; do
+    local abs_file="${git_root}/${rel_file}"
+    local section="=== ${rel_file} ==="
+    if [ -f "$abs_file" ] && grep -q -E '^<<<<<<<' "$abs_file" 2>/dev/null; then
+      local hunks
+      hunks=$(awk '
+        {
+          lines[NR] = $0
+        }
+        /^<<<<<<</ {
+          start = NR - 3
+          if (start < 1) start = 1
+          if (last_printed > 0 && start > last_printed + 1) print "--"
+          if (start <= last_printed) start = last_printed + 1
+          for (i = start; i <= NR; i++) {
+            print lines[i]
+            last_printed = i
+          }
+          in_conflict = 1
+          post = 0
+          next
+        }
+        in_conflict {
+          print $0
+          last_printed = NR
+          if (/^>>>>>>>/) {
+            in_conflict = 0
+            post = 3
+          }
+          next
+        }
+        post > 0 {
+          print $0
+          last_printed = NR
+          post--
+        }
+      ' "$abs_file")
+      section="${section}"$'\n'"${hunks}"
+    else
+      section="${section}"$'\n'"(conflict without inline markers; check git status)"
+    fi
+    if [ -n "$out" ]; then
+      out="${out}"$'\n\n'"${section}"
+    else
+      out="${section}"
+    fi
+  done
+
+  if [ "$is_preview" == "true" ]; then
+    local line_count
+    line_count=$(printf '%s\n' "$out" | wc -l)
+    if [ "$line_count" -gt 25 ]; then
+      printf '%s\n...(truncated for preview)' "$(printf '%s\n' "$out" | head -n 25)"
+      return 0
+    fi
+  fi
+  printf '%s' "$out"
+}
+
+# List changed files (working tree, index, untracked, and current branch vs base)
+list_git_changed_files() {
+  local all_files=()
+  local skip_next=0
+  local rec
+  while IFS= read -r -d '' rec; do
+    if [ "$skip_next" -eq 1 ]; then
+      skip_next=0
+      continue
+    fi
+    [ -z "$rec" ] && continue
+    local xy="${rec:0:2}"
+    local p="${rec:3}"
+    [ -n "$p" ] && all_files+=("$p")
+    if [[ "$xy" == *R* ]] || [[ "$xy" == *C* ]]; then
+      skip_next=1
+    fi
+  done < <(safe_git status --porcelain -uall -z 2>/dev/null)
+
+  local base_branch
+  base_branch=$(resolve_git_base_branch 2>/dev/null)
+  if [ -n "$base_branch" ]; then
+    local bf
+    while IFS= read -r -d '' bf; do
+      [ -n "$bf" ] && all_files+=("$bf")
+    done < <(safe_git diff --name-only -z "${base_branch}...HEAD" 2>/dev/null)
+  fi
+
+  if [ "${#all_files[@]}" -gt 0 ]; then
+    printf '%s\n' "${all_files[@]}" | awk 'NF && !seen[$0]++'
+  fi
+}
+
+# Interactive fzf chooser for git commits (returns short commit SHA)
+choose_git_commit() {
+  local commits
+  commits=$(safe_git log -n 200 --oneline --decorate 2>/dev/null)
+  if [ -z "$commits" ]; then
+    echo "No git commits found." >&2
+    return 1
+  fi
+  local selected_line
+  selected_line=$(printf '%s\n' "$commits" | fzf \
+    --layout=reverse \
+    --header="Select a git commit:" \
+    --preview='bash -c '\''git --no-pager show --stat --color=always "$1" 2>/dev/null; echo "---"; git --no-pager show --color=always "$1" 2>/dev/null | head -n 80'\'' _ {1}' \
+    --preview-window=right:50%:wrap)
+  if [ -z "$selected_line" ]; then
+    echo "Cancelled git commit selection." >&2
+    return 1
+  fi
+  printf '%s' "$selected_line" | awk '{print $1}'
+}
+
 # Resolve all placeholders using non-recursive sentinel substitution
 resolve_placeholders() {
   local prompt="$1"
@@ -798,18 +1016,22 @@ resolve_placeholders() {
   if [[ "$prompt" == *"{{git_diff:staged}}"* ]]; then
     local tok="__${nonce}_GITDIFFSTAGED__"
     prompt=$(safe_replace "$prompt" "{{git_diff:staged}}" "$tok")
+    local diff_val
+    diff_val=$(resolve_git_diff_value "No staged git changes" "$is_preview" --cached)
+    tokens+=("$tok")
+    values+=("$diff_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_diff:branch}}"* ]]; then
+    local tok="__${nonce}_GITDIFFBRANCH__"
+    prompt=$(safe_replace "$prompt" "{{git_diff:branch}}" "$tok")
     local diff_val=""
-    if [ "$is_preview" == "true" ]; then
-      diff_val=$(safe_git diff --cached 2>/dev/null | head -n 25)
-      if [ -n "$diff_val" ]; then
-        if [ "$(safe_git diff --cached 2>/dev/null | wc -l)" -gt 25 ]; then
-          diff_val="${diff_val}\n...(truncated for preview)"
-        fi
-      else
-        diff_val="No staged git changes"
-      fi
+    local base_branch
+    base_branch=$(resolve_git_base_branch 2>/dev/null)
+    if [ -n "$base_branch" ]; then
+      diff_val=$(resolve_git_diff_value "No branch diff changes" "$is_preview" "${base_branch}...HEAD")
     else
-      diff_val=$(safe_git diff --cached 2>/dev/null)
+      diff_val="No base branch found"
     fi
     tokens+=("$tok")
     values+=("$diff_val")
@@ -818,21 +1040,40 @@ resolve_placeholders() {
   if [[ "$prompt" == *"{{git_diff}}"* ]]; then
     local tok="__${nonce}_GITDIFF__"
     prompt=$(safe_replace "$prompt" "{{git_diff}}" "$tok")
-    local diff_val=""
-    if [ "$is_preview" == "true" ]; then
-      diff_val=$(safe_git diff 2>/dev/null | head -n 25)
-      if [ -n "$diff_val" ]; then
-        if [ "$(safe_git diff 2>/dev/null | wc -l)" -gt 25 ]; then
-          diff_val="${diff_val}\n...(truncated for preview)"
-        fi
-      else
-        diff_val="No git changes"
-      fi
-    else
-      diff_val=$(safe_git diff 2>/dev/null)
-    fi
+    local diff_val
+    diff_val=$(resolve_git_diff_value "No git changes" "$is_preview")
     tokens+=("$tok")
     values+=("$diff_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_log:branch}}"* ]]; then
+    local tok="__${nonce}_GITLOGBRANCH__"
+    prompt=$(safe_replace "$prompt" "{{git_log:branch}}" "$tok")
+    local log_val=""
+    local base_branch
+    base_branch=$(resolve_git_base_branch 2>/dev/null)
+    if [ -n "$base_branch" ]; then
+      log_val=$(safe_git log --oneline "${base_branch}..HEAD" 2>/dev/null)
+      if [ -z "$log_val" ]; then
+        log_val="No branch commits"
+      fi
+    else
+      log_val="No base branch found"
+    fi
+    tokens+=("$tok")
+    values+=("$log_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_log}}"* ]]; then
+    local tok="__${nonce}_GITLOG__"
+    prompt=$(safe_replace "$prompt" "{{git_log}}" "$tok")
+    local log_val
+    log_val=$(safe_git log -n 10 --oneline 2>/dev/null)
+    if [ -z "$log_val" ]; then
+      log_val="No git commits found"
+    fi
+    tokens+=("$tok")
+    values+=("$log_val")
   fi
 
   if [[ "$prompt" == *"{{git_status}}"* ]]; then
@@ -844,6 +1085,33 @@ resolve_placeholders() {
     values+=("$status_val")
   fi
 
+  if [[ "$prompt" == *"{{git_branch:choose}}"* ]]; then
+    local tok="__${nonce}_GITBRANCHCHOOSE__"
+    prompt=$(safe_replace "$prompt" "{{git_branch:choose}}" "$tok")
+    local branch_val=""
+    if [ "$is_preview" == "true" ]; then
+      branch_val="[Selected git branch]"
+    else
+      local branches
+      branches=$(safe_git for-each-ref --sort=-committerdate --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null | grep -v -E '^origin/HEAD$|/HEAD$')
+      if [ -z "$branches" ]; then
+        echo "No git branches found." >&2
+        exit 0
+      fi
+      branch_val=$(printf '%s\n' "$branches" | fzf \
+        --layout=reverse \
+        --header="Select a git branch:" \
+        --preview='bash -c '\''git --no-pager log -n 20 --oneline --graph --decorate --color=always "$1" 2>/dev/null'\'' _ {}' \
+        --preview-window=right:50%:wrap)
+      if [ -z "$branch_val" ]; then
+        echo "Cancelled git branch selection." >&2
+        exit 0
+      fi
+    fi
+    tokens+=("$tok")
+    values+=("$branch_val")
+  fi
+
   if [[ "$prompt" == *"{{git_branch}}"* ]]; then
     local tok="__${nonce}_GITBRANCH__"
     prompt=$(safe_replace "$prompt" "{{git_branch}}" "$tok")
@@ -851,6 +1119,150 @@ resolve_placeholders() {
     branch_val=$(safe_git branch --show-current 2>/dev/null || echo "no-branch")
     tokens+=("$tok")
     values+=("$branch_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_commit:diff}}"* ]]; then
+    local tok="__${nonce}_GITCOMMITDIFF__"
+    prompt=$(safe_replace "$prompt" "{{git_commit:diff}}" "$tok")
+    local commit_diff_val=""
+    if [ "$is_preview" == "true" ]; then
+      commit_diff_val="[Diff of selected git commit]"
+    else
+      local selected_sha
+      selected_sha=$(choose_git_commit) || exit 0
+      commit_diff_val=$(safe_git show "$selected_sha" 2>/dev/null)
+    fi
+    tokens+=("$tok")
+    values+=("$commit_diff_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_commit}}"* ]]; then
+    local tok="__${nonce}_GITCOMMIT__"
+    prompt=$(safe_replace "$prompt" "{{git_commit}}" "$tok")
+    local commit_val=""
+    if [ "$is_preview" == "true" ]; then
+      commit_val="[Selected git commit hash]"
+    else
+      commit_val=$(choose_git_commit) || exit 0
+    fi
+    tokens+=("$tok")
+    values+=("$commit_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_conflicts}}"* ]]; then
+    local tok="__${nonce}_GITCONFLICTS__"
+    prompt=$(safe_replace "$prompt" "{{git_conflicts}}" "$tok")
+    local conflicts_val
+    conflicts_val=$(extract_git_conflicts "$is_preview")
+    tokens+=("$tok")
+    values+=("$conflicts_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_changed_file}}"* ]]; then
+    local tok="__${nonce}_GITCHANGEDFILE__"
+    prompt=$(safe_replace "$prompt" "{{git_changed_file}}" "$tok")
+    local changed_file_val=""
+    if [ "$is_preview" == "true" ]; then
+      changed_file_val="[Path of selected changed file]"
+    else
+      if ! safe_git rev-parse --is-inside-work-tree &>/dev/null; then
+        echo "Not inside a git repository." >&2
+        exit 0
+      fi
+      local git_root changed_files
+      git_root=$(safe_git rev-parse --show-toplevel 2>/dev/null)
+      changed_files=$(list_git_changed_files)
+      if [ -z "$changed_files" ]; then
+        echo "No changed files found." >&2
+        exit 0
+      fi
+      changed_file_val=$(printf '%s\n' "$changed_files" | PROMPTER_GIT_ROOT="$git_root" fzf \
+        --layout=reverse \
+        --header="Select a changed file:" \
+        --preview='bash -c '\''root="$PROMPTER_GIT_ROOT"; f="$1"; d=$(git --no-pager -C "$root" diff -- "$f" 2>/dev/null); dc=$(git --no-pager -C "$root" diff --cached -- "$f" 2>/dev/null); if [ -n "$d" ] || [ -n "$dc" ]; then [ -n "$dc" ] && echo "=== Staged ===" && printf "%s\n" "$dc"; [ -n "$d" ] && echo "=== Unstaged ===" && printf "%s\n" "$d"; elif [ -f "$root/$f" ]; then head -n 60 "$root/$f"; else echo "(deleted or missing)"; fi'\'' _ {}' \
+        --preview-window=right:50%:wrap)
+      if [ -z "$changed_file_val" ]; then
+        echo "Cancelled changed file selection." >&2
+        exit 0
+      fi
+    fi
+    tokens+=("$tok")
+    values+=("$changed_file_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_worktree}}"* ]]; then
+    local tok="__${nonce}_GITWORKTREE__"
+    prompt=$(safe_replace "$prompt" "{{git_worktree}}" "$tok")
+    local wt_val=""
+    if [ "$is_preview" == "true" ]; then
+      wt_val="[Path of selected git worktree]"
+    else
+      local porcelain_out
+      porcelain_out=$(safe_git worktree list --porcelain 2>/dev/null)
+      if [ -z "$porcelain_out" ]; then
+        echo "Not inside a git repository or no worktrees found." >&2
+        exit 0
+      fi
+
+      local current_wt=""
+      current_wt=$(safe_git rev-parse --show-toplevel 2>/dev/null)
+      if [ -n "$current_wt" ] && [ -d "$current_wt" ]; then
+        current_wt=$(cd "$current_wt" 2>/dev/null && pwd -P)
+      fi
+
+      local wt_options
+      wt_options=$(printf '%s\n' "$porcelain_out" | CUR_WT="$current_wt" awk '
+        BEGIN {
+          cur = ENVIRON["CUR_WT"]
+        }
+        function flush_entry() {
+          if (path == "") return
+          if (is_bare) {
+            label = "bare"
+          } else if (branch != "") {
+            sub(/^refs\/heads\//, "", branch)
+            label = branch
+          } else if (is_detached) {
+            label = "detached" (head != "" ? " @ " substr(head, 1, 7) : "")
+          } else {
+            label = "unknown"
+          }
+          marker = (cur != "" && path == cur) ? "* " : "  "
+          printf "%s[%s] %s\t%s\n", marker, label, path, path
+          path = ""; head = ""; branch = ""; is_bare = 0; is_detached = 0
+        }
+        /^worktree / { flush_entry(); path = substr($0, 10); next }
+        /^HEAD /     { head = substr($0, 6); next }
+        /^branch /   { branch = substr($0, 8); next }
+        /^bare$/     { is_bare = 1; next }
+        /^detached$/ { is_detached = 1; next }
+        /^[[:space:]]*$/ { flush_entry(); next }
+        END { flush_entry() }
+      ')
+
+      if [ -z "$wt_options" ]; then
+        echo "No git worktrees found." >&2
+        exit 0
+      fi
+
+      local selected_wt_line
+      selected_wt_line=$(printf '%s\n' "$wt_options" | fzf \
+        --layout=reverse \
+        --delimiter=$'\t' \
+        --with-nth=1 \
+        --header="Select a git worktree:" \
+        --preview='bash -c '\''if [ -d "$1" ]; then git --no-pager -C "$1" status -sb 2>/dev/null || echo "(bare repository)"; echo "---"; git --no-pager -C "$1" log -n 5 --oneline --decorate 2>/dev/null; else echo "(directory missing)"; fi'\'' _ {2}' \
+        --preview-window=right:50%:wrap)
+
+      if [ -n "$selected_wt_line" ]; then
+        wt_val=$(printf '%s' "$selected_wt_line" | awk -F'\t' '{print $NF}')
+      else
+        echo "Cancelled git worktree selection." >&2
+        exit 0
+      fi
+    fi
+    tokens+=("$tok")
+    values+=("$wt_val")
   fi
 
   # 4. Scrollback context
@@ -1055,7 +1467,7 @@ resolve_placeholders() {
             file_path="${git_root}/${file_path}"
           fi
         else
-          file_path=$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||' | fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):")
+          file_path=$(fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):" <<< "$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||')")
         fi
         
         if [ -n "$file_path" ] && [ -f "$file_path" ]; then
@@ -1087,7 +1499,7 @@ resolve_placeholders() {
           file_path="${git_root}/${file_path}"
         fi
       else
-        file_path=$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||' | fzf --layout=reverse --header="Select a file to insert:")
+        file_path=$(fzf --layout=reverse --header="Select a file to insert:" <<< "$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||')")
       fi
       
       if [ -n "$file_path" ] && [ -f "$file_path" ]; then
@@ -1117,7 +1529,7 @@ resolve_placeholders() {
         git_root=$(safe_git rev-parse --show-toplevel)
         file_path=$(cd "$git_root" && (safe_git status -s | cut -c4-; safe_git ls-files) | sort -u | fzf --layout=reverse --header="Select a file to insert path:")
       else
-        file_path=$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||' | fzf --layout=reverse --header="Select a file to insert path:")
+        file_path=$(fzf --layout=reverse --header="Select a file to insert path:" <<< "$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||')")
       fi
       
       if [ -n "$file_path" ]; then
@@ -1182,7 +1594,7 @@ resolve_placeholders() {
 if [ "$1" == "--list-templates" ]; then
   load_templates
   for title in "${TEMPLATES_TITLES[@]}"; do
-    echo "$title"
+    [ -n "$title" ] && echo "$title"
   done
   echo "🔧 Edit Templates"
   exit 0
@@ -1197,7 +1609,7 @@ if [ "$1" == "--list-all" ]; then
   load_history_options
   load_templates
   for title in "${TEMPLATES_TITLES[@]}"; do
-    echo "$title"
+    [ -n "$title" ] && echo "$title"
   done
   echo "🔧 Edit Templates"
   exit 0
@@ -1288,9 +1700,17 @@ export SCRIPT_PATH
 while true; do
   load_templates
 
+  # Build initial options in memory so SIGPIPE-ignored parents do not emit Broken pipe
+  # if fzf exits before an upstream sed/subprocess pipe finishes flushing.
+  initial_options=""
+  for title in "${TEMPLATES_TITLES[@]}"; do
+    [ -n "$title" ] && initial_options+="${title}"$'\n'
+  done
+  initial_options+="🔧 Edit Templates"
+
   # Run fzf with preview panel enabled and dynamic reload binding
   # Default view: Templates
-  SELECTED_OPTION=$(bash "$SCRIPT_PATH" --list-templates | sed '/^$/d' | fzf \
+  SELECTED_OPTION=$(fzf \
     --header="[Ctrl-T] Templates  |  [Ctrl-R] History  |  [Ctrl-A] All Options" \
     --prompt="Templates> " \
     --layout=reverse \
@@ -1300,7 +1720,7 @@ while true; do
     --preview-window=right:50%:wrap \
     --bind "ctrl-r:reload(bash \"$SCRIPT_PATH\" --list-history)+change-prompt(History> )" \
     --bind "ctrl-t:reload(bash \"$SCRIPT_PATH\" --list-templates)+change-prompt(Templates> )" \
-    --bind "ctrl-a:reload(bash \"$SCRIPT_PATH\" --list-all)+change-prompt(All> )")
+    --bind "ctrl-a:reload(bash \"$SCRIPT_PATH\" --list-all)+change-prompt(All> )" <<< "$initial_options")
 
   if [ -z "$SELECTED_OPTION" ]; then
     exit 0

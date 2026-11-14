@@ -175,6 +175,8 @@ EOF
   run bash "$PROMPTER_SCRIPT"
   [ -d "$TEMP_CONFIG_DIR/templates" ]
   [ -f "$TEMP_CONFIG_DIR/templates/summarize-discussion.md" ]
+  [ -f "$TEMP_CONFIG_DIR/templates/cd-worktree.md" ]
+  [ -f "$TEMP_CONFIG_DIR/templates/review-branch-changes.md" ]
 }
 
 @test "T-02: Automatic migration from legacy templates.txt to templates/*.md" {
@@ -1019,6 +1021,302 @@ EOF
   [ "$output" = 'Command: echo " "' ]
 }
 
+@test "H-15: {{git_worktree}} preview and worktree selection (including spaces in path and branch label)" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/cd-worktree.md"
+# CD to Git Worktree
+cd "{{git_worktree}}"
+EOF
+
+  # 1. Preview mode
+  run bash "$PROMPTER_SCRIPT" --preview-only "CD to Git Worktree" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'cd "[Path of selected git worktree]"'* ]]
+
+  # 2. Execution mode with a real secondary git worktree (containing spaces in path)
+  cd "$MOCK_GIT_DIR" || exit 1
+  local wt_dir="$TEST_TEMP_DIR/worktree with spaces"
+  git worktree add -q -b feat/wt-test "$wt_dir"
+  local wt_real_dir
+  wt_real_dir=$(cd "$wt_dir" && pwd -P)
+
+  export TEST_STAGE="git_worktree"
+  export MOCK_WORKTREE_MATCH="\[feat/wt-test\]"
+  export MUX_BACKEND="herdr"
+  rm -f "$MOCK_LOG_DIR"/*.log
+
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "cd \"$wt_real_dir\"" ]
+  [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" == *"pane send-text w2:p2 cd \"$wt_real_dir\""* ]]
+  [[ "$(cat "$MOCK_LOG_DIR/fzf_calls.log")" == *"--with-nth=1"* ]]
+  [[ "$(cat "$MOCK_LOG_DIR/fzf_calls.log")" == *"--preview=bash -c"* ]]
+}
+
+@test "H-16: {{git_worktree}} handles detached HEAD, cancellation, and non-git directory safely" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/cd-worktree.md"
+# CD to Git Worktree
+cd "{{git_worktree}}"
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  local detached_dir="$TEST_TEMP_DIR/wt_detached"
+  git worktree add -q --detach "$detached_dir"
+  local detached_real_dir
+  detached_real_dir=$(cd "$detached_dir" && pwd -P)
+
+  # 1. Detached HEAD selection
+  export TEST_STAGE="git_worktree"
+  export MOCK_WORKTREE_MATCH="\[detached @"
+  export MUX_BACKEND="herdr"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "cd \"$detached_real_dir\"" ]
+
+  # 2. Cancellation exits cleanly without injecting text
+  export TEST_STAGE="cancel_worktree"
+  unset MOCK_WORKTREE_MATCH
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+
+  # 3. Non-git directory exits cleanly without injecting empty cd
+  NON_GIT_DIR="$TEST_TEMP_DIR/non_git_wt_dir"
+  mkdir -p "$NON_GIT_DIR"
+  cd "$NON_GIT_DIR" || exit 1
+  NON_GIT_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$NON_GIT_DIR\"}"
+  export HERDR_PLUGIN_CONTEXT_JSON="$NON_GIT_CONTEXT"
+  export GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  export TEST_STAGE="git_worktree"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+}
+
+@test "H-17: {{git_worktree}} works inside a bare repository with linked worktrees" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/cd-worktree.md"
+# CD to Git Worktree
+cd "{{git_worktree}}"
+EOF
+
+  local bare_repo="$TEST_TEMP_DIR/bare_repo.git"
+  git clone -q --bare "$MOCK_GIT_DIR" "$bare_repo"
+  local bare_wt="$TEST_TEMP_DIR/bare_wt_feat"
+  git -C "$bare_repo" worktree add -q -b feat/from-bare "$bare_wt"
+  local bare_wt_real
+  bare_wt_real=$(cd "$bare_wt" && pwd -P)
+
+  cd "$bare_repo" || exit 1
+  export HERDR_PLUGIN_CONTEXT_JSON="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$bare_repo\"}"
+  export TEST_STAGE="git_worktree"
+  export MOCK_WORKTREE_MATCH="\[feat/from-bare\]"
+  export MUX_BACKEND="herdr"
+  rm -f "$MOCK_LOG_DIR"/*.log
+
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "cd \"$bare_wt_real\"" ]
+  [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" == *"pane send-text w2:p2 cd \"$bare_wt_real\""* ]]
+}
+
+@test "H-18: {{git_diff:branch}}, {{git_log}}, and {{git_log:branch}} resolve base branch diff and commits" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/branch-review.md"
+# Branch Review Test
+Log:
+{{git_log}}
+Branch Log:
+{{git_log:branch}}
+Branch Diff:
+{{git_diff:branch}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  local base_branch
+  base_branch=$(git branch --show-current)
+  git checkout -q -b feat/new-api
+  for i in {1..30}; do
+    echo "api line $i" >> api.txt
+  done
+  git add api.txt
+  git commit -q -m "feat: add api file"
+
+  # Preview mode truncates diff at 25 lines and includes commits
+  run bash "$PROMPTER_SCRIPT" --preview-only "Branch Review Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"feat: add api file"* ]]
+  [[ "$output" == *"initial commit"* ]]
+  [[ "$output" == *"api line 5"* ]]
+  [[ "$output" == *"truncated for preview"* ]]
+
+  # On base branch itself with no upstream -> graceful fallback message
+  git checkout -q "$base_branch"
+  run bash "$PROMPTER_SCRIPT" --preview-only "Branch Review Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No base branch found"* ]]
+}
+
+@test "H-19: {{git_commit}} and {{git_commit:diff}} resolve commit hash, diff, and cancel safely" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-commit.md"
+# Git Commit Test
+git show {{git_commit}}
+EOF
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-commit-diff.md"
+# Git Commit Diff Test
+{{git_commit:diff}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  echo "second commit content" > second.txt
+  git add second.txt
+  git commit -q -m "feat: second commit"
+  local target_sha
+  target_sha=$(git rev-parse --short HEAD)
+
+  # 1. Preview modes
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Commit Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git show [Selected git commit hash]" ]
+
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Commit Diff Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "[Diff of selected git commit]" ]
+
+  # 2. Execution: {{git_commit}}
+  export TEST_STAGE="git_commit"
+  export MOCK_COMMIT_MATCH="feat: second commit"
+  export MUX_BACKEND="herdr"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git show $target_sha" ]
+
+  # 3. Execution: {{git_commit:diff}}
+  export TEST_STAGE="git_commit_diff"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"feat: second commit"* ]]
+  [[ "$output" == *"+second commit content"* ]]
+
+  # 4. Cancellation exits cleanly without injecting text
+  export TEST_STAGE="cancel_commit"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+}
+
+@test "H-20: {{git_branch:choose}} picks branch cleanly and handles cancellation" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-branch-choose.md"
+# Git Branch Choose Test
+git switch {{git_branch:choose}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  git branch feat/pick-me
+
+  # 1. Preview mode
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Branch Choose Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git switch [Selected git branch]" ]
+
+  # 2. Execution
+  export TEST_STAGE="git_branch_choose"
+  export MOCK_BRANCH_MATCH="feat/pick-me"
+  export MUX_BACKEND="herdr"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git switch feat/pick-me" ]
+
+  # 3. Cancellation
+  export TEST_STAGE="cancel_branch"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+}
+
+@test "H-21: {{git_conflicts}} extracts conflict blocks and handles clean/non-git repos" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-conflicts.md"
+# Git Conflicts Test
+{{git_conflicts}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+
+  # 1. Clean repo without conflicts
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Conflicts Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "No git merge conflicts detected" ]
+
+  # 2. Create a real merge conflict
+  local base_branch
+  base_branch=$(git branch --show-current)
+  echo "base line" > conflict.txt
+  git add conflict.txt
+  git commit -q -m "add conflict base"
+
+  git checkout -q -b feat/conflict-branch
+  echo "feature line" > conflict.txt
+  git add conflict.txt
+  git commit -q -m "feature edit"
+
+  git checkout -q "$base_branch"
+  echo "main line" > conflict.txt
+  git add conflict.txt
+  git commit -q -m "main edit"
+
+  git merge feat/conflict-branch &>/dev/null || true
+
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Conflicts Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"=== conflict.txt ==="* ]]
+  [[ "$output" == *"<<<<<<< HEAD"* ]]
+  [[ "$output" == *"main line"* ]]
+  [[ "$output" == *"feature line"* ]]
+  [[ "$output" == *">>>>>>> feat/conflict-branch"* ]]
+
+  # Abort merge for cleanliness
+  git merge --abort &>/dev/null || true
+
+  # 3. Non-git directory fallback
+  NON_GIT_DIR="$TEST_TEMP_DIR/non_git_conflict_dir"
+  mkdir -p "$NON_GIT_DIR"
+  NON_GIT_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$NON_GIT_DIR\"}"
+  export GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Conflicts Test" "$NON_GIT_CONTEXT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Not a git repository" ]
+}
+
+@test "H-22: {{git_changed_file}} picks working/branch changed files and handles cancellation" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-changed-file.md"
+# Git Changed File Test
+Review {{git_changed_file}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  echo "changed content" > "changed with spaces.txt"
+
+  # 1. Preview mode
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Changed File Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Review [Path of selected changed file]" ]
+
+  # 2. Execution (untracked changed file with spaces - verifies no C-style quoting)
+  export TEST_STAGE="git_changed_file"
+  export MOCK_CHANGED_FILE_MATCH="changed with spaces.txt"
+  export MUX_BACKEND="herdr"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Review changed with spaces.txt" ]
+
+  # 3. Cancellation
+  export TEST_STAGE="cancel_changed_file"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+}
 @test "Z-01: Auto-detects zellij backend when ZELLIJ env vars are set" {
   export ZELLIJ="0"
   export ZELLIJ_SESSION_NAME="test-session"
