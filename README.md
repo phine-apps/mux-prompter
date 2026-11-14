@@ -23,7 +23,7 @@ By pressing a simple shortcut, a dynamic `fzf` UI pops up, allowing you to pick 
 ```text
 [ Active Terminal Pane ]
   │
-  ├── 1. Press shortcut (`prefix + P` / `Alt + p`) ──► [ Prompter UI (fzf) ]
+  ├── 1. Press shortcut (`prefix + P`)              ──► [ Prompter UI (fzf) ]
   │                                                       ├── Templates> (Default)
   │                                                       ├── History>   (Ctrl-R)
   │                                                       └── All>       (Ctrl-A)
@@ -127,19 +127,21 @@ Mux Prompter supports **Zellij (0.44+)** across tabs and floating panes using `-
    git clone https://github.com/phine-apps/mux-prompter.git ~/apps/mux-prompter
    ```
 
-2. **Add Keybinding to `~/.config/zellij/config.kdl`**:
+2. **Add Keybinding to `~/.config/zellij/config.kdl`** (uses Zellij's built-in `tmux` mode so `Ctrl+b` → `P` works across platforms without conflicting with macOS `⌘P` Print or Option-key input):
    ```kdl
    keybinds {
-       shared {
-           bind "Alt p" {
+       tmux {
+           bind "P" {
                Run "bash" "-lc" "~/apps/mux-prompter/prompter.sh" {
                    floating true
                    close_on_exit true
                }
+               SwitchToMode "Normal"
            }
        }
    }
    ```
+   *(If you prefer `Alt p` under `shared`, enable "Option as Meta / Esc+" in your macOS terminal settings.)*
 
 ---
 
@@ -147,7 +149,7 @@ Mux Prompter supports **Zellij (0.44+)** across tabs and floating panes using `-
 
 ### Step 1: Open Prompter UI
 
-Press your configured shortcut key (`prefix` + `P` in tmux, or shell shortcut). The `fzf` UI overlay will appear at the top.
+Press your configured shortcut key (`prefix` + `P` in Herdr/tmux, or `Ctrl+b` then `P` in Zellij). The `fzf` UI overlay will appear at the top.
 
 ### Step 2: Switch Views (Optional)
 
