@@ -172,6 +172,7 @@ EOF
   [ -d "$TEMP_CONFIG_DIR/templates" ]
   [ -f "$TEMP_CONFIG_DIR/templates/summarize-discussion.md" ]
   [ -f "$TEMP_CONFIG_DIR/templates/cd-worktree.md" ]
+  [ -f "$TEMP_CONFIG_DIR/templates/review-branch-changes.md" ]
 }
 
 @test "T-02: Automatic migration from legacy templates.txt to templates/*.md" {
@@ -1114,6 +1115,205 @@ EOF
   [ "$output" = "cd \"$bare_wt_real\"" ]
   [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" == *"pane send-text w2:p2 cd \"$bare_wt_real\""* ]]
 }
+
+@test "H-18: {{git_diff:branch}}, {{git_log}}, and {{git_log:branch}} resolve base branch diff and commits" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/branch-review.md"
+# Branch Review Test
+Log:
+{{git_log}}
+Branch Log:
+{{git_log:branch}}
+Branch Diff:
+{{git_diff:branch}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  local base_branch
+  base_branch=$(git branch --show-current)
+  git checkout -q -b feat/new-api
+  for i in {1..30}; do
+    echo "api line $i" >> api.txt
+  done
+  git add api.txt
+  git commit -q -m "feat: add api file"
+
+  # Preview mode truncates diff at 25 lines and includes commits
+  run bash "$PROMPTER_SCRIPT" --preview-only "Branch Review Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"feat: add api file"* ]]
+  [[ "$output" == *"initial commit"* ]]
+  [[ "$output" == *"api line 5"* ]]
+  [[ "$output" == *"truncated for preview"* ]]
+
+  # On base branch itself with no upstream -> graceful fallback message
+  git checkout -q "$base_branch"
+  run bash "$PROMPTER_SCRIPT" --preview-only "Branch Review Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"No base branch found"* ]]
+}
+
+@test "H-19: {{git_commit}} and {{git_commit:diff}} resolve commit hash, diff, and cancel safely" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-commit.md"
+# Git Commit Test
+git show {{git_commit}}
+EOF
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-commit-diff.md"
+# Git Commit Diff Test
+{{git_commit:diff}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  echo "second commit content" > second.txt
+  git add second.txt
+  git commit -q -m "feat: second commit"
+  local target_sha
+  target_sha=$(git rev-parse --short HEAD)
+
+  # 1. Preview modes
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Commit Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git show [Selected git commit hash]" ]
+
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Commit Diff Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "[Diff of selected git commit]" ]
+
+  # 2. Execution: {{git_commit}}
+  export TEST_STAGE="git_commit"
+  export MOCK_COMMIT_MATCH="feat: second commit"
+  export MUX_BACKEND="herdr"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git show $target_sha" ]
+
+  # 3. Execution: {{git_commit:diff}}
+  export TEST_STAGE="git_commit_diff"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"feat: second commit"* ]]
+  [[ "$output" == *"+second commit content"* ]]
+
+  # 4. Cancellation exits cleanly without injecting text
+  export TEST_STAGE="cancel_commit"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+}
+
+@test "H-20: {{git_branch:choose}} picks branch cleanly and handles cancellation" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-branch-choose.md"
+# Git Branch Choose Test
+git switch {{git_branch:choose}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  git branch feat/pick-me
+
+  # 1. Preview mode
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Branch Choose Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git switch [Selected git branch]" ]
+
+  # 2. Execution
+  export TEST_STAGE="git_branch_choose"
+  export MOCK_BRANCH_MATCH="feat/pick-me"
+  export MUX_BACKEND="herdr"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "git switch feat/pick-me" ]
+
+  # 3. Cancellation
+  export TEST_STAGE="cancel_branch"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+}
+
+@test "H-21: {{git_conflicts}} extracts conflict blocks and handles clean/non-git repos" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-conflicts.md"
+# Git Conflicts Test
+{{git_conflicts}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+
+  # 1. Clean repo without conflicts
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Conflicts Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "No git merge conflicts detected" ]
+
+  # 2. Create a real merge conflict
+  local base_branch
+  base_branch=$(git branch --show-current)
+  echo "base line" > conflict.txt
+  git add conflict.txt
+  git commit -q -m "add conflict base"
+
+  git checkout -q -b feat/conflict-branch
+  echo "feature line" > conflict.txt
+  git add conflict.txt
+  git commit -q -m "feature edit"
+
+  git checkout -q "$base_branch"
+  echo "main line" > conflict.txt
+  git add conflict.txt
+  git commit -q -m "main edit"
+
+  git merge feat/conflict-branch &>/dev/null || true
+
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Conflicts Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"=== conflict.txt ==="* ]]
+  [[ "$output" == *"<<<<<<< HEAD"* ]]
+  [[ "$output" == *"main line"* ]]
+  [[ "$output" == *"feature line"* ]]
+  [[ "$output" == *">>>>>>> feat/conflict-branch"* ]]
+
+  # Abort merge for cleanliness
+  git merge --abort &>/dev/null || true
+
+  # 3. Non-git directory fallback
+  NON_GIT_DIR="$TEST_TEMP_DIR/non_git_conflict_dir"
+  mkdir -p "$NON_GIT_DIR"
+  NON_GIT_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$NON_GIT_DIR\"}"
+  export GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Conflicts Test" "$NON_GIT_CONTEXT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Not a git repository" ]
+}
+
+@test "H-22: {{git_changed_file}} picks working/branch changed files and handles cancellation" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/git-changed-file.md"
+# Git Changed File Test
+Review {{git_changed_file}}
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  echo "changed content" > "changed with spaces.txt"
+
+  # 1. Preview mode
+  run bash "$PROMPTER_SCRIPT" --preview-only "Git Changed File Test" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Review [Path of selected changed file]" ]
+
+  # 2. Execution (untracked changed file with spaces - verifies no C-style quoting)
+  export TEST_STAGE="git_changed_file"
+  export MOCK_CHANGED_FILE_MATCH="changed with spaces.txt"
+  export MUX_BACKEND="herdr"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "Review changed with spaces.txt" ]
+
+  # 3. Cancellation
+  export TEST_STAGE="cancel_changed_file"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+}
+
 
 
 

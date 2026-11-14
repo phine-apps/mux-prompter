@@ -23,6 +23,13 @@ if [[ "$args" == *"[Ctrl-R] History"* ]] || [[ "$args" == *"Select a prompt temp
     "file_path")    echo "File Path Test" ; exit 0 ;;
     "git_worktree") echo "CD to Git Worktree" ; exit 0 ;;
     "cancel_worktree") echo "CD to Git Worktree" ; exit 0 ;;
+    "git_commit") echo "Git Commit Test" ; exit 0 ;;
+    "cancel_commit") echo "Git Commit Test" ; exit 0 ;;
+    "git_commit_diff") echo "Git Commit Diff Test" ; exit 0 ;;
+    "git_branch_choose") echo "Git Branch Choose Test" ; exit 0 ;;
+    "cancel_branch") echo "Git Branch Choose Test" ; exit 0 ;;
+    "git_changed_file") echo "Git Changed File Test" ; exit 0 ;;
+    "cancel_changed_file") echo "Git Changed File Test" ; exit 0 ;;
     "hang_test")    echo "Hang Prevention Test" ; exit 0 ;;
     "selected_test") echo "Refactor Selected Code" ; exit 0 ;;
     "delete_template")
@@ -90,6 +97,60 @@ if [[ "$args" == *"Select a git worktree:"* ]]; then
   fi
   if [ -n "$MOCK_WORKTREE_MATCH" ]; then
     grep -m 1 "$MOCK_WORKTREE_MATCH" || true
+  else
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ]; then
+        echo "$line"
+        exit 0
+      fi
+    done
+  fi
+  exit 0
+fi
+
+# Case 8: Git commit selection
+if [[ "$args" == *"Select a git commit:"* ]]; then
+  if [ "$TEST_STAGE" == "cancel_commit" ]; then
+    exit 130
+  fi
+  if [ -n "$MOCK_COMMIT_MATCH" ]; then
+    grep -m 1 "$MOCK_COMMIT_MATCH" || true
+  else
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ]; then
+        echo "$line"
+        exit 0
+      fi
+    done
+  fi
+  exit 0
+fi
+
+# Case 9: Git branch selection
+if [[ "$args" == *"Select a git branch:"* ]]; then
+  if [ "$TEST_STAGE" == "cancel_branch" ]; then
+    exit 130
+  fi
+  if [ -n "$MOCK_BRANCH_MATCH" ]; then
+    grep -m 1 "$MOCK_BRANCH_MATCH" || true
+  else
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ]; then
+        echo "$line"
+        exit 0
+      fi
+    done
+  fi
+  exit 0
+fi
+
+# Case 10: Git changed file selection
+if [[ "$args" == *"Select a changed file:"* ]]; then
+  if [ "$TEST_STAGE" == "cancel_changed_file" ]; then
+    exit 130
+  fi
+  if [ -n "$MOCK_CHANGED_FILE_MATCH" ]; then
+    grep -m 1 "$MOCK_CHANGED_FILE_MATCH" || true
   else
     while IFS= read -r line || [ -n "$line" ]; do
       if [ -n "$line" ]; then
