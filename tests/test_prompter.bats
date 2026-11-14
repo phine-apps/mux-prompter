@@ -171,6 +171,7 @@ EOF
   run bash "$PROMPTER_SCRIPT"
   [ -d "$TEMP_CONFIG_DIR/templates" ]
   [ -f "$TEMP_CONFIG_DIR/templates/summarize-discussion.md" ]
+  [ -f "$TEMP_CONFIG_DIR/templates/cd-worktree.md" ]
 }
 
 @test "T-02: Automatic migration from legacy templates.txt to templates/*.md" {
@@ -1014,6 +1015,107 @@ EOF
   [ "$status" -eq 0 ]
   [ "$output" = 'Command: echo " "' ]
 }
+
+@test "H-15: {{git_worktree}} preview and worktree selection (including spaces in path and branch label)" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/cd-worktree.md"
+# CD to Git Worktree
+cd "{{git_worktree}}"
+EOF
+
+  # 1. Preview mode
+  run bash "$PROMPTER_SCRIPT" --preview-only "CD to Git Worktree" "$HERDR_PLUGIN_CONTEXT_JSON"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'cd "[Path of selected git worktree]"'* ]]
+
+  # 2. Execution mode with a real secondary git worktree (containing spaces in path)
+  cd "$MOCK_GIT_DIR" || exit 1
+  local wt_dir="$TEST_TEMP_DIR/worktree with spaces"
+  git worktree add -q -b feat/wt-test "$wt_dir"
+  local wt_real_dir
+  wt_real_dir=$(cd "$wt_dir" && pwd -P)
+
+  export TEST_STAGE="git_worktree"
+  export MOCK_WORKTREE_MATCH="\[feat/wt-test\]"
+  export MUX_BACKEND="herdr"
+  rm -f "$MOCK_LOG_DIR"/*.log
+
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "cd \"$wt_real_dir\"" ]
+  [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" == *"pane send-text w2:p2 cd \"$wt_real_dir\""* ]]
+  [[ "$(cat "$MOCK_LOG_DIR/fzf_calls.log")" == *"--with-nth=1"* ]]
+  [[ "$(cat "$MOCK_LOG_DIR/fzf_calls.log")" == *"--preview=bash -c"* ]]
+}
+
+@test "H-16: {{git_worktree}} handles detached HEAD, cancellation, and non-git directory safely" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/cd-worktree.md"
+# CD to Git Worktree
+cd "{{git_worktree}}"
+EOF
+
+  cd "$MOCK_GIT_DIR" || exit 1
+  local detached_dir="$TEST_TEMP_DIR/wt_detached"
+  git worktree add -q --detach "$detached_dir"
+  local detached_real_dir
+  detached_real_dir=$(cd "$detached_dir" && pwd -P)
+
+  # 1. Detached HEAD selection
+  export TEST_STAGE="git_worktree"
+  export MOCK_WORKTREE_MATCH="\[detached @"
+  export MUX_BACKEND="herdr"
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "cd \"$detached_real_dir\"" ]
+
+  # 2. Cancellation exits cleanly without injecting text
+  export TEST_STAGE="cancel_worktree"
+  unset MOCK_WORKTREE_MATCH
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+
+  # 3. Non-git directory exits cleanly without injecting empty cd
+  NON_GIT_DIR="$TEST_TEMP_DIR/non_git_wt_dir"
+  mkdir -p "$NON_GIT_DIR"
+  cd "$NON_GIT_DIR" || exit 1
+  NON_GIT_CONTEXT="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$NON_GIT_DIR\"}"
+  export HERDR_PLUGIN_CONTEXT_JSON="$NON_GIT_CONTEXT"
+  export GIT_CEILING_DIRECTORIES="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
+  export TEST_STAGE="git_worktree"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
+}
+
+@test "H-17: {{git_worktree}} works inside a bare repository with linked worktrees" {
+  cat << 'EOF' > "$MOCK_CONFIG_DIR/templates/cd-worktree.md"
+# CD to Git Worktree
+cd "{{git_worktree}}"
+EOF
+
+  local bare_repo="$TEST_TEMP_DIR/bare_repo.git"
+  git clone -q --bare "$MOCK_GIT_DIR" "$bare_repo"
+  local bare_wt="$TEST_TEMP_DIR/bare_wt_feat"
+  git -C "$bare_repo" worktree add -q -b feat/from-bare "$bare_wt"
+  local bare_wt_real
+  bare_wt_real=$(cd "$bare_wt" && pwd -P)
+
+  cd "$bare_repo" || exit 1
+  export HERDR_PLUGIN_CONTEXT_JSON="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$bare_repo\"}"
+  export TEST_STAGE="git_worktree"
+  export MOCK_WORKTREE_MATCH="\[feat/from-bare\]"
+  export MUX_BACKEND="herdr"
+  rm -f "$MOCK_LOG_DIR"/*.log
+
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [ "$output" = "cd \"$bare_wt_real\"" ]
+  [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" == *"pane send-text w2:p2 cd \"$bare_wt_real\""* ]]
+}
+
+
 
 
 

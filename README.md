@@ -174,6 +174,7 @@ You can use any of the following placeholders inside your prompt templates:
 | `{{file}}`            | Pick a file from repository          | `fzf` opens to select a file. Injects **full contents** of the file.        |
 | `{{file_path}}`       | Pick a file from repository          | `fzf` opens to select a file. Injects **relative path** of the file.        |
 | `{{file:lines=1-20}}` | Truncate specific lines from a file  | Injects lines 1 to 20 from selected file.                                   |
+| `{{git_worktree}}`    | Pick a git worktree in repository    | `fzf` opens with branch/status/log preview. Injects **directory path** of the selected worktree (e.g. `cd "{{git_worktree}}"`). |
 | `{{input}}`           | Custom multi-line prompt input       | Prompts for manual input in terminal (Ctrl+D to finish).                    |
 | `{{var:name}}`        | Interactive custom variable          | Prompts for value `name` (or shows `fzf` choices if generator is defined).  |
 

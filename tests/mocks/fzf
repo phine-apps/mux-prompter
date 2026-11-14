@@ -21,6 +21,8 @@ if [[ "$args" == *"[Ctrl-R] History"* ]] || [[ "$args" == *"Select a prompt temp
     "error")        echo "Explain Terminal Error" ; exit 0 ;;
     "file_lines")   echo "Extract Lines" ; exit 0 ;;
     "file_path")    echo "File Path Test" ; exit 0 ;;
+    "git_worktree") echo "CD to Git Worktree" ; exit 0 ;;
+    "cancel_worktree") echo "CD to Git Worktree" ; exit 0 ;;
     "hang_test")    echo "Hang Prevention Test" ; exit 0 ;;
     "selected_test") echo "Refactor Selected Code" ; exit 0 ;;
     "delete_template")
@@ -79,6 +81,24 @@ if [[ "$args" == *"[Ctrl-D] Delete"* ]] || [[ "$args" == *"Select template to ed
     echo -e "ctrl-d\nReview Git Changes (review-git.md)"
     exit 0
   fi
+fi
+
+# Case 7: Git worktree selection
+if [[ "$args" == *"Select a git worktree:"* ]]; then
+  if [ "$TEST_STAGE" == "cancel_worktree" ]; then
+    exit 130
+  fi
+  if [ -n "$MOCK_WORKTREE_MATCH" ]; then
+    grep -m 1 "$MOCK_WORKTREE_MATCH" || true
+  else
+    while IFS= read -r line || [ -n "$line" ]; do
+      if [ -n "$line" ]; then
+        echo "$line"
+        exit 0
+      fi
+    done
+  fi
+  exit 0
 fi
 
 # Default fallback

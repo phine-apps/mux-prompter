@@ -430,6 +430,11 @@ EOF
 {{input}}
 EOF
 
+  cat << 'EOF' > "${TEMPLATES_DIR}/cd-worktree.md"
+# CD to Git Worktree
+cd "{{git_worktree}}"
+EOF
+
   cat << 'EOF' > "$VARS_FILE"
 # Custom variable candidate generators ($ var_name: shell_command):
 # $ branch: git branch --format="%(refname:short)"
@@ -719,6 +724,81 @@ resolve_placeholders() {
     branch_val=$(safe_git branch --show-current 2>/dev/null || echo "no-branch")
     tokens+=("$tok")
     values+=("$branch_val")
+  fi
+
+  if [[ "$prompt" == *"{{git_worktree}}"* ]]; then
+    local tok="__${nonce}_GITWORKTREE__"
+    prompt=$(safe_replace "$prompt" "{{git_worktree}}" "$tok")
+    local wt_val=""
+    if [ "$is_preview" == "true" ]; then
+      wt_val="[Path of selected git worktree]"
+    else
+      local porcelain_out
+      porcelain_out=$(safe_git worktree list --porcelain 2>/dev/null)
+      if [ -z "$porcelain_out" ]; then
+        echo "Not inside a git repository or no worktrees found." >&2
+        exit 0
+      fi
+
+      local current_wt=""
+      current_wt=$(safe_git rev-parse --show-toplevel 2>/dev/null)
+      if [ -n "$current_wt" ] && [ -d "$current_wt" ]; then
+        current_wt=$(cd "$current_wt" 2>/dev/null && pwd -P)
+      fi
+
+      local wt_options
+      wt_options=$(printf '%s\n' "$porcelain_out" | CUR_WT="$current_wt" awk '
+        BEGIN {
+          cur = ENVIRON["CUR_WT"]
+        }
+        function flush_entry() {
+          if (path == "") return
+          if (is_bare) {
+            label = "bare"
+          } else if (branch != "") {
+            sub(/^refs\/heads\//, "", branch)
+            label = branch
+          } else if (is_detached) {
+            label = "detached" (head != "" ? " @ " substr(head, 1, 7) : "")
+          } else {
+            label = "unknown"
+          }
+          marker = (cur != "" && path == cur) ? "* " : "  "
+          printf "%s[%s] %s\t%s\n", marker, label, path, path
+          path = ""; head = ""; branch = ""; is_bare = 0; is_detached = 0
+        }
+        /^worktree / { flush_entry(); path = substr($0, 10); next }
+        /^HEAD /     { head = substr($0, 6); next }
+        /^branch /   { branch = substr($0, 8); next }
+        /^bare$/     { is_bare = 1; next }
+        /^detached$/ { is_detached = 1; next }
+        /^[[:space:]]*$/ { flush_entry(); next }
+        END { flush_entry() }
+      ')
+
+      if [ -z "$wt_options" ]; then
+        echo "No git worktrees found." >&2
+        exit 0
+      fi
+
+      local selected_wt_line
+      selected_wt_line=$(printf '%s\n' "$wt_options" | fzf \
+        --layout=reverse \
+        --delimiter=$'\t' \
+        --with-nth=1 \
+        --header="Select a git worktree:" \
+        --preview='bash -c '\''if [ -d "$1" ]; then git --no-pager -C "$1" status -sb 2>/dev/null || echo "(bare repository)"; echo "---"; git --no-pager -C "$1" log -n 5 --oneline --decorate 2>/dev/null; else echo "(directory missing)"; fi'\'' _ {2}' \
+        --preview-window=right:50%:wrap)
+
+      if [ -n "$selected_wt_line" ]; then
+        wt_val=$(printf '%s' "$selected_wt_line" | awk -F'\t' '{print $NF}')
+      else
+        echo "Cancelled git worktree selection." >&2
+        exit 0
+      fi
+    fi
+    tokens+=("$tok")
+    values+=("$wt_val")
   fi
 
   # 4. Scrollback context
