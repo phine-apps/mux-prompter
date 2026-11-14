@@ -17,7 +17,7 @@ export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
 # Check dependencies
 if ! command -v jq &> /dev/null; then
   echo "Error: 'jq' is required to run this plugin." >&2
-  if [ -t 0 ]; then
+  if [ -t 0 ] && [ -t 1 ] && [ -z "$CI" ] && [ -z "$BATS_VERSION" ] && [ -z "$PROMPTER_TEST_MODE" ]; then
     read -r -p "Press Enter to exit..."
   fi
   exit 1
@@ -25,7 +25,7 @@ fi
 
 if ! command -v fzf &> /dev/null; then
   echo "Error: 'fzf' is required to run this plugin." >&2
-  if [ -t 0 ]; then
+  if [ -t 0 ] && [ -t 1 ] && [ -z "$CI" ] && [ -z "$BATS_VERSION" ] && [ -z "$PROMPTER_TEST_MODE" ]; then
     read -r -p "Press Enter to exit..."
   fi
   exit 1
@@ -731,8 +731,9 @@ print(text.replace(r"\n", r"\\n").replace("\n", r"\n"), end="")
     mkdir -p "$(dirname "$HISTORY_FILE")"
     # Write new item and append existing items excluding duplicates atomically
     if [ -f "$HISTORY_FILE" ]; then
-      (echo "$escaped_text"; grep -vxF -e "$escaped_text" -- "$HISTORY_FILE" 2>/dev/null || true) | head -n 50 > "${HISTORY_FILE}.tmp"
-      mv "${HISTORY_FILE}.tmp" "$HISTORY_FILE"
+      local tmp_file="${HISTORY_FILE}.$$.tmp"
+      (echo "$escaped_text"; grep -vxF -e "$escaped_text" -- "$HISTORY_FILE" 2>/dev/null || true) | head -n 50 > "$tmp_file"
+      mv "$tmp_file" "$HISTORY_FILE"
     else
       echo "$escaped_text" > "$HISTORY_FILE"
     fi
@@ -1326,8 +1327,11 @@ resolve_placeholders() {
         elif echo "$line" | grep -q -E "(❯|▶|)[[:space:]]+"; then
           cmd_candidate=$(echo "$line" | sed -E 's/^.*(❯|▶|)[[:space:]]+//')
         # Case D: Standard prompt terminator ($ or % or #) with trailing space
-        elif echo "$line" | grep -q -E "(\\\$|%|#)[[:space:]]+"; then
-          cmd_candidate=$(echo "$line" | sed -E 's/^[^\$#%]*[\$#%][[:space:]]+//')
+        elif echo "$line" | grep -q -E "(^|[^0-9[:space:]])[[:space:]]*(\\\$|#)[[:space:]]+|(^[[:space:]]*|[^0-9[:space:]][[:space:]]*)%[[:space:]]+"; then
+          # Reject false positives where the only % is a numeric progress indicator (e.g. 100% done)
+          if ! echo "$line" | grep -q -E "^[^$#%]*[0-9]+%[[:space:]]+[^$#%]*$"; then
+            cmd_candidate=$(echo "$line" | sed -E 's/^[^\$#%]*[\$#%][[:space:]]+//')
+          fi
         fi
         
         # Strip Powerline right-prompt ()
@@ -1431,7 +1435,6 @@ resolve_placeholders() {
           imported_logs=$(mux_read_pane_logs "$selected_pane_id" 100)
           imported_logs=$(echo "$imported_logs" | sed -E 's/\x1B\[[0-9;]*[a-zA-Z]//g')
           pane_val="$imported_logs"
-          TARGET_PANES=("$selected_pane_id")
         else
           echo "Cancelled pane selection." >&2
           exit 0
@@ -1462,7 +1465,7 @@ resolve_placeholders() {
         if safe_git rev-parse --is-inside-work-tree &>/dev/null; then
           local git_root
           git_root=$(safe_git rev-parse --show-toplevel)
-          file_path=$(cd "$git_root" && (safe_git status -s | cut -c4-; safe_git ls-files) | sort -u | fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):")
+          file_path=$(cd "$git_root" && (safe_git ls-files; safe_git ls-files --others --exclude-standard) | sort -u | fzf --layout=reverse --header="Select a file to insert (lines ${start_line}-${end_line}):")
           if [ -n "$file_path" ]; then
             file_path="${git_root}/${file_path}"
           fi
@@ -1494,7 +1497,7 @@ resolve_placeholders() {
       if safe_git rev-parse --is-inside-work-tree &>/dev/null; then
         local git_root
         git_root=$(safe_git rev-parse --show-toplevel)
-        file_path=$(cd "$git_root" && (safe_git status -s | cut -c4-; safe_git ls-files) | sort -u | fzf --layout=reverse --header="Select a file to insert (Git Root: $(basename "$git_root")):")
+        file_path=$(cd "$git_root" && (safe_git ls-files; safe_git ls-files --others --exclude-standard) | sort -u | fzf --layout=reverse --header="Select a file to insert (Git Root: $(basename "$git_root")):")
         if [ -n "$file_path" ]; then
           file_path="${git_root}/${file_path}"
         fi
@@ -1527,7 +1530,7 @@ resolve_placeholders() {
       if safe_git rev-parse --is-inside-work-tree &>/dev/null; then
         local git_root
         git_root=$(safe_git rev-parse --show-toplevel)
-        file_path=$(cd "$git_root" && (safe_git status -s | cut -c4-; safe_git ls-files) | sort -u | fzf --layout=reverse --header="Select a file to insert path:")
+        file_path=$(cd "$git_root" && (safe_git ls-files; safe_git ls-files --others --exclude-standard) | sort -u | fzf --layout=reverse --header="Select a file to insert path:")
       else
         file_path=$(fzf --layout=reverse --header="Select a file to insert path:" <<< "$(find . -maxdepth 3 -type f -not -path '*/.*' 2>/dev/null | sed 's|^\./||')")
       fi

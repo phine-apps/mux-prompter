@@ -585,20 +585,14 @@ def run_tmux_e2e(stats: RunnerStats, verbose: bool) -> None:
             assert "FULL=line1\nline2_target\nline3_target\nline4" in text, text
 
         def case_05_cross_pane_and_broadcast() -> None:
-            # 1) {{pane:choose}} selects Window 1 (1.0 | %1)
+            # 1) {{pane:choose}} imports logs from Window 1 (1.0 | %1) into caller pane (p0)
             out0 = tmp / "p05_choose.txt"
             start_cat_capture(p0, out0)
             m = open_popup_and_pick("E2E Cross Pane Logs")
             client.fzf_pick(p1, header_wait="Select a pane to import logs from:", since=m)
-            # {{pane:choose}} overrides TARGET_PANES to selected pane (p1)
-            tmux("send-keys", "-t", p0, "C-c")
-            time.sleep(0.15)
-            wait_for_condition(
-                lambda: "OTHER_PANE_LOG_99" in tmux("capture-pane", "-t", p1, "-p").stdout,
-                desc="cross-pane chosen logs injected into selected pane p1",
-            )
-            tmux("send-keys", "-t", p1, "C-c")
-            time.sleep(0.15)
+            text = finish_cat_capture(p0, out0)
+            assert "-imported-logs:" in text, text
+            assert "OTHER_PANE_LOG_99" in text, text
 
             # 2) {{panes:choose}} multi-select with Tab across p0 and p1
             out_b0 = tmp / "p05_b0.txt"
@@ -899,10 +893,10 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
             assert "UNSTAGED_E2E_LINE" in text, text
 
         def case_02_floating_cross_tab_choose() -> None:
-            # Capture Tab 2 payload cleanly with non-canonical cat
-            t2_out = tmp / "zj_t2_cap.txt"
-            zj("action", "paste", "--pane-id", t2_pane, "--", f"stty -echo -icanon min 1 time 0; cat > '{t2_out}'; stty sane")
-            zj("action", "send-keys", "--pane-id", t2_pane, "Enter")
+            # Capture Tab 1 (caller pane) payload cleanly with non-canonical cat
+            t1_out = tmp / "zj_t1_cap.txt"
+            zj("action", "paste", "--pane-id", t1_pane, "--", f"stty -echo -icanon min 1 time 0; cat > '{t1_out}'; stty sane")
+            zj("action", "send-keys", "--pane-id", t1_pane, "Enter")
             time.sleep(0.25)
 
             m = client.mark()
@@ -911,17 +905,17 @@ def run_zellij_e2e(stats: RunnerStats, verbose: bool) -> None:
             client.fzf_pick("OtherTab", header_wait="Select a pane to import logs from:", since=m)
 
             wait_for_condition(lambda: done_flag.exists(), timeout=10.0, desc="zj floating exit")
-            wait_for_condition(lambda: t2_out.exists() and t2_out.stat().st_size > 0, desc="zj tab2 paste")
+            wait_for_condition(lambda: t1_out.exists() and t1_out.stat().st_size > 0, desc="zj tab1 paste")
             time.sleep(0.25)
-            zj("action", "send-keys", "--pane-id", t2_pane, "Ctrl c")
+            zj("action", "send-keys", "--pane-id", t1_pane, "Ctrl c")
             wait_for_condition(
                 lambda: "READY>" in (
-                    [ln for ln in zj("action", "dump-screen", "--pane-id", t2_pane, "--full").stdout.splitlines() if ln.strip()]
+                    [ln for ln in zj("action", "dump-screen", "--pane-id", t1_pane, "--full").stdout.splitlines() if ln.strip()]
                     or [""]
                 )[-1],
-                desc="Tab 2 shell restored",
+                desc="Tab 1 shell restored",
             )
-            captured = t2_out.read_text(encoding="utf-8", errors="replace")
+            captured = t1_out.read_text(encoding="utf-8", errors="replace")
             assert "-imported-logs:" in captured, captured
             assert "TAB2_ZELLIJ_ERR_77" in captured, captured
             assert "\x1b[" not in captured, captured
@@ -1106,8 +1100,8 @@ def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
         )
 
         def case_01_logs_git_and_choose() -> None:
-            out_p1 = tmp / "hd_p1_cap.txt"
-            hd("pane", "run", p1, f"stty -echo -icanon min 1 time 0; cat > '{out_p1}'; stty sane")
+            out_p0 = tmp / "hd_p0_cap.txt"
+            hd("pane", "run", p0, f"stty -echo -icanon min 1 time 0; cat > '{out_p0}'; stty sane")
             time.sleep(0.25)
 
             p = PTYController(
@@ -1123,17 +1117,17 @@ def run_herdr_e2e(stats: RunnerStats, verbose: bool) -> None:
             finally:
                 p.close()
 
-            wait_for_condition(lambda: out_p1.exists() and out_p1.stat().st_size > 0, desc="Herdr p1 cat capture")
+            wait_for_condition(lambda: out_p0.exists() and out_p0.stat().st_size > 0, desc="Herdr p0 cat capture")
             time.sleep(0.25)
-            hd("pane", "send-keys", p1, "ctrl+c")
+            hd("pane", "send-keys", p0, "ctrl+c")
             wait_for_condition(
                 lambda: "READY>" in (
-                    [ln for ln in hd("pane", "read", p1, "--lines", "20", check=False).stdout.splitlines() if ln.strip()]
+                    [ln for ln in hd("pane", "read", p0, "--lines", "20", check=False).stdout.splitlines() if ln.strip()]
                     or [""]
                 )[-1],
-                desc="Herdr p1 shell prompt return",
+                desc="Herdr p0 shell prompt return",
             )
-            captured = out_p1.read_text(encoding="utf-8", errors="replace")
+            captured = out_p0.read_text(encoding="utf-8", errors="replace")
             assert "-imported-logs:" in captured, captured
             assert "HERDR_PANE2_ERR_88" in captured, captured
             assert "\x1b[" not in captured, captured
