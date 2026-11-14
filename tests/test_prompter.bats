@@ -34,6 +34,9 @@ setup() {
   unset ZELLIJ
   unset ZELLIJ_SESSION_NAME
   unset ZELLIJ_PANE_ID
+  unset HERDR_PANE_ID
+  unset PROMPTER_TARGET_PANE
+  unset PROMPTER_CALLER_PANE
 
   # Write initial templates to the mock config directory
   write_templates
@@ -180,6 +183,7 @@ EOF
   [ -f "$TEMP_CONFIG_DIR/templates/summarize-discussion.md" ]
   [ -f "$TEMP_CONFIG_DIR/templates/cd-worktree.md" ]
   [ -f "$TEMP_CONFIG_DIR/templates/review-branch-changes.md" ]
+  [ -f "$TEMP_CONFIG_DIR/templates/analyze-other-pane.md" ]
 }
 
 @test "T-02: Automatic migration from legacy templates.txt to templates/*.md" {
@@ -552,6 +556,40 @@ EOF
   [ ! -f "$MOCK_LOG_DIR/tmux_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/tmux_calls.log")" != *"capture-pane"* ]]
 }
 
+@test "I-07b: Herdr context JSON takes priority over inherited TMUX/ZELLIJ and falls back when context is absent" {
+  export TMUX="/tmp/tmux-1000/default,1234,0"
+  export TMUX_PANE="%0"
+  # shellcheck disable=SC2089,SC2090
+  export HERDR_PLUGIN_CONTEXT_JSON="{\"focused_pane_id\": \"w2:p2\", \"workspace_cwd\": \"$MOCK_GIT_DIR\"}"
+  export MUX_BACKEND="auto"
+  export TEST_STAGE="logs"
+  rm -f "$MOCK_LOG_DIR"/*.log
+
+  run bash "$PROMPTER_SCRIPT"
+  [ "$status" -eq 0 ]
+  [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" == *"pane read w2:p2"* ]]
+  [ ! -f "$MOCK_LOG_DIR/tmux_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/tmux_calls.log")" != *"capture-pane"* ]]
+
+  # Verify fallback resolves focused pane from herdr pane list when context & HERDR_PANE_ID are absent
+  unset TMUX TMUX_PANE HERDR_PLUGIN_CONTEXT_JSON HERDR_PANE_ID
+  export MUX_BACKEND="herdr"
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    mux_get_target_pane_id ''
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "w2:p2" ]
+
+  # Verify HERDR_PANE_ID is used as intermediate fallback when context JSON is absent
+  export HERDR_PANE_ID="w9:p9"
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    mux_get_target_pane_id ''
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "w9:p9" ]
+}
+
 @test "I-08: Explicit Backend Override" {
   export TMUX="/tmp/tmux-1000/default,1234,0"
   export TMUX_PANE="%0"
@@ -884,11 +922,10 @@ EOF
   # Test Case 1: Internal double space (e.g. commit message)
   run bash -c "
     TARGET_PANE_ID='%1'
+    eval \"\$(sed '/^# --- Handle Option List Modes/,\$d' '$PROMPTER_SCRIPT')\"
     mux_read_pane_logs() {
       echo 'user@box:~$ git commit -m \"feat:  add feature\"'
     }
-    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
-    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
     resolve_placeholders 'Command: {{last_command}}' 'false'
     echo \"\$RESOLVED_PROMPT\"
   "
@@ -898,11 +935,10 @@ EOF
   # Test Case 2: Multi-space after prompt terminator
   run bash -c "
     TARGET_PANE_ID='%1'
+    eval \"\$(sed '/^# --- Handle Option List Modes/,\$d' '$PROMPTER_SCRIPT')\"
     mux_read_pane_logs() {
       echo 'user@box:~$  ls -la'
     }
-    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
-    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
     resolve_placeholders 'Command: {{last_command}}' 'false'
     echo \"\$RESOLVED_PROMPT\"
   "
@@ -912,11 +948,10 @@ EOF
   # Test Case 3: oh-my-zsh prompt with RPROMPT margin
   run bash -c "
     TARGET_PANE_ID='%1'
+    eval \"\$(sed '/^# --- Handle Option List Modes/,\$d' '$PROMPTER_SCRIPT')\"
     mux_read_pane_logs() {
       echo '➜  dir git:(main) ✗ git status        10:00'
     }
-    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
-    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
     resolve_placeholders 'Command: {{last_command}}' 'false'
     echo \"\$RESOLVED_PROMPT\"
   "
@@ -984,12 +1019,11 @@ EOF
   # Test Case 1: Powerlevel9k prompt with  and RPROMPT 
   run bash -c "
     TARGET_PANE_ID='%1'
+    eval \"\$(sed '/^# --- Handle Option List Modes/,\$d' '$PROMPTER_SCRIPT')\"
     mux_read_pane_logs() {
       echo 'user@box  ~/apps   main ● ?  ls   ✔  10128  10:33:42'
       echo 'user@box  ~/apps   main ● ?  '
     }
-    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
-    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
     resolve_placeholders 'Command: {{last_command}}' 'false'
     echo \"\$RESOLVED_PROMPT\"
   "
@@ -999,12 +1033,11 @@ EOF
   # Test Case 2: Prezto sorin theme with ❯❯❯
   run bash -c "
     TARGET_PANE_ID='%1'
+    eval \"\$(sed '/^# --- Handle Option List Modes/,\$d' '$PROMPTER_SCRIPT')\"
     mux_read_pane_logs() {
       echo '~/dir ❯❯❯ git status'
       echo '~/dir ❯❯❯ '
     }
-    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
-    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
     resolve_placeholders 'Command: {{last_command}}' 'false'
     echo \"\$RESOLVED_PROMPT\"
   "
@@ -1014,13 +1047,12 @@ EOF
   # Test Case 3: Powerlevel9k prompt executing echo \" \"
   run bash -c "
     TARGET_PANE_ID='%1'
+    eval \"\$(sed '/^# --- Handle Option List Modes/,\$d' '$PROMPTER_SCRIPT')\"
     mux_read_pane_logs() {
       echo 'user@box  ~/apps  echo \" \"'
       echo ' '
       echo 'user@box  ~/apps  '
     }
-    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
-    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
     resolve_placeholders 'Command: {{last_command}}' 'false'
     echo \"\$RESOLVED_PROMPT\"
   "
@@ -1327,6 +1359,7 @@ EOF
   [ ! -f "$MOCK_LOG_DIR/herdr_calls.log" ] || [[ "$(cat "$MOCK_LOG_DIR/herdr_calls.log")" != *"pane send-text"* ]]
 }
 @test "Z-01: Auto-detects zellij backend when ZELLIJ env vars are set" {
+  unset HERDR_PLUGIN_CONTEXT_JSON
   export ZELLIJ="0"
   export ZELLIJ_SESSION_NAME="test-session"
   export ZELLIJ_PANE_ID="5"
@@ -1355,6 +1388,7 @@ EOF
 }
 
 @test "Z-03: mux_get_target_pane_id ignores plugin and floating prompter panes, picking active-tab focused pane" {
+  unset HERDR_PLUGIN_CONTEXT_JSON
   export ZELLIJ="0"
   export ZELLIJ_SESSION_NAME="test-session"
   export ZELLIJ_PANE_ID="5"
@@ -1369,6 +1403,7 @@ EOF
 }
 
 @test "Z-04: mux_get_workspace_cwd resolves pane_cwd from resolved target pane" {
+  unset HERDR_PLUGIN_CONTEXT_JSON
   export ZELLIJ="0"
   export ZELLIJ_SESSION_NAME="test-session"
   export ZELLIJ_PANE_ID="5"
@@ -1382,6 +1417,7 @@ EOF
 }
 
 @test "Z-05: {{pane_logs}} captures active-tab target pane scrollback via zellij dump-screen --full" {
+  unset HERDR_PLUGIN_CONTEXT_JSON
   export ZELLIJ="0"
   export ZELLIJ_SESSION_NAME="test-session"
   export ZELLIJ_PANE_ID="5"
@@ -1399,6 +1435,7 @@ EOF
 }
 
 @test "Z-06: {{pane:choose}} selects zellij terminal_<id> pane across tabs" {
+  unset HERDR_PLUGIN_CONTEXT_JSON
   export ZELLIJ="0"
   export ZELLIJ_SESSION_NAME="test-session"
   export ZELLIJ_PANE_ID="5"
@@ -1415,6 +1452,7 @@ EOF
 }
 
 @test "Z-07: {{panes:choose}} broadcasts across tabs and safely passes hyphen-prefixed text via paste --" {
+  unset HERDR_PLUGIN_CONTEXT_JSON
   export ZELLIJ="0"
   export ZELLIJ_SESSION_NAME="test-session"
   export ZELLIJ_PANE_ID="5"
@@ -1494,13 +1532,12 @@ EOF
 @test "ADV-25: {{last_command}} does not falsely extract from percentage lines (e.g. 100% complete)" {
   run bash -c "
     TARGET_PANE_ID='%1'
+    eval \"\$(sed '/^# --- Handle Option List Modes/,\$d' '$PROMPTER_SCRIPT')\"
     mux_read_pane_logs() {
       echo 'user@box:~$ npm test'
       echo 'Progress: 100% complete'
       echo 'Fetch: 85% done'
     }
-    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
-    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
     resolve_placeholders 'Ran: {{last_command}}' 'false'
     echo \"\$RESOLVED_PROMPT\"
   "
@@ -1509,12 +1546,11 @@ EOF
 
   run bash -c "
     TARGET_PANE_ID='%1'
+    eval \"\$(sed '/^# --- Handle Option List Modes/,\$d' '$PROMPTER_SCRIPT')\"
     mux_read_pane_logs() {
       echo '% ls -la'
       echo '50 % done'
     }
-    eval \"\$(sed -n '/^safe_replace() {/,/^}/p' '$PROMPTER_SCRIPT')\"
-    eval \"\$(sed -n '/^resolve_placeholders() {/,/^}/p' '$PROMPTER_SCRIPT')\"
     resolve_placeholders 'Ran: {{last_command}}' 'false'
     echo \"\$RESOLVED_PROMPT\"
   "
@@ -1565,4 +1601,83 @@ EOF
   [[ "$output" != *"testpwned.md"* ]]
   [[ "$output" == *'SPACE: [/tmp/my template.md]'* ]]
 }
+
+@test "ADV-29: clean_pane_logs strips DEC private CSI, OSC, and outer blank runs, and supports {{pane_logs:lines=N}}" {
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    raw=\$'\\n\\n\\033]0;title\\007\\033[?25h\\033[31mLINE1\\033[0m   \\r\\n\\n\\n\\n\\033]8;;https://example.com\\033\\\\LINK\\033]8;;\\033\\\\\\n\\n'
+    cleaned=\$(printf '%s' \"\$raw\" | clean_pane_logs)
+    printf 'CLEANED:[%s]\n' \"\$cleaned\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'CLEANED:[LINE1'$'\n\n''LINK]'* ]]
+  [[ "$output" != *'25h'* ]]
+  [[ "$output" != *'title'* ]]
+
+  # Verify awk fallback works identically without python3
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    command() {
+      if [ \"\$1\" = '-v' ] && [ \"\$2\" = 'python3' ]; then
+        return 1
+      fi
+      builtin command \"\$@\"
+    }
+    raw=\$'\\033]0;title\\007\\033[?25hRED\\033[0m \\033]8;;https://ex\\033\\\\OK\\033]8;;\\033\\\\\\r\\n'
+    out=\$(printf '%s' \"\$raw\" | strip_ansi_and_control)
+    printf 'AWK:[%s]\n' \"\$out\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'AWK:[RED OK]'* ]]
+
+  # Verify {{pane_logs:lines=5}} passes requested line count to mux_read_pane_logs
+  export MUX_BACKEND="herdr"
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    TARGET_PANE_ID='w2:p2'
+    resolve_placeholders 'Head: {{pane_logs:lines=5}}' 'false'
+    printf '%s\n' \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'database connection failed'* ]]
+  grep -q -- "pane read w2:p2 --lines 5" "$MOCK_LOG_DIR/herdr_calls.log"
+}
+
+@test "ADV-30: {{pane:choose}} marks current pane, supports --preview-pane, :errors, and :lines=N" {
+  export MUX_BACKEND="herdr"
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    TARGET_PANE_ID='w2:p2'
+    opts=\$(format_pane_choose_options \$'Tab 1 | w2:p1 (/a)\nTab 1 | w2:p2 (Prompter UI) (/b)\nTab 1 | w2:p3 (Other Pane) (/c)' 'w2:p2')
+    printf '%s\n' \"\$opts\"
+    echo 'LAST_ID:'\$(extract_pane_id_from_line \"\$(printf '%s\n' \"\$opts\" | tail -n 1)\")
+  "
+  [ "$status" -eq 0 ]
+  [[ "$(printf '%s\n' "$output" | head -n 1)" == *"w2:p1"* ]]
+  [[ "$(printf '%s\n' "$output" | sed -n '3p')" == *"w2:p2"*"[current]"* ]]
+  [[ "$output" == *"LAST_ID:w2:p2"* ]]
+
+  # Test --preview-pane
+  run bash "$PROMPTER_SCRIPT" --preview-pane "Tab 1 | w2:p3 (Other Pane) (/c)"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"=== Pane: w2:p3 ==="* ]]
+  [[ "$output" == *"database connection failed"* ]]
+
+  # Test {{pane:choose:errors}} and {{pane:choose:lines=20}}
+  rm -f "$MOCK_LOG_DIR"/*.log
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    TARGET_PANE_ID='w2:p2'
+    resolve_placeholders 'Err: {{pane:choose:errors}}' 'false'
+    printf 'ERR_OUT:%s\n' \"\$RESOLVED_PROMPT\"
+    resolve_placeholders 'Lines: {{pane:choose:lines=20}}' 'false'
+    printf 'LINES_OUT:%s\n' \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ERR_OUT:Err:"*"database connection failed"* ]]
+  [[ "$output" == *"LINES_OUT:Lines:"*"npm run dev"* ]]
+  grep -q -- "pane read 0.1 --lines 20" "$MOCK_LOG_DIR/herdr_calls.log" || grep -q -- "pane read %1 --lines 20" "$MOCK_LOG_DIR/herdr_calls.log"
+}
+
 
