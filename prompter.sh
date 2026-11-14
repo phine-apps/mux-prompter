@@ -8,6 +8,7 @@ SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 # Multiplexer CLI paths & backend configuration
 HERDR_BIN="${HERDR_BIN_PATH:-herdr}"
 TMUX_BIN="${TMUX_BIN_PATH:-tmux}"
+ZELLIJ_BIN="${ZELLIJ_BIN_PATH:-zellij}"
 MUX_BACKEND_CONF="${MUX_BACKEND:-auto}"
 
 # Export standard installation paths as fallback to ensure dependencies are found in tmux popups
@@ -73,19 +74,20 @@ safe_replace() {
   fi
 }
 
-# Detect active multiplexer backend (herdr or tmux)
+# Detect active multiplexer backend (herdr, tmux, or zellij)
 detect_backend() {
-  if [ "$MUX_BACKEND_CONF" = "tmux" ]; then
-    echo "tmux"
-    return 0
-  elif [ "$MUX_BACKEND_CONF" = "herdr" ]; then
-    echo "herdr"
-    return 0
-  fi
+  case "$MUX_BACKEND_CONF" in
+    tmux|herdr|zellij)
+      echo "$MUX_BACKEND_CONF"
+      return 0
+      ;;
+  esac
 
   # Auto-detection based on environment variables and active CLI responsiveness
   if [ -n "$TMUX" ]; then
     echo "tmux"
+  elif [ -n "$ZELLIJ" ] || [ -n "$ZELLIJ_SESSION_NAME" ]; then
+    echo "zellij"
   elif [ -n "$HERDR_PLUGIN_CONTEXT_JSON" ]; then
     echo "herdr"
   elif command -v "$TMUX_BIN" &>/dev/null && "$TMUX_BIN" info &>/dev/null; then
@@ -94,6 +96,8 @@ detect_backend() {
     echo "herdr"
   elif command -v "$TMUX_BIN" &>/dev/null; then
     echo "tmux"
+  elif command -v "$ZELLIJ_BIN" &>/dev/null; then
+    echo "zellij"
   else
     echo "herdr"
   fi
@@ -101,14 +105,33 @@ detect_backend() {
 
 CURRENT_BACKEND=$(detect_backend)
 
+# Invoke `zellij action`, scoping to $ZELLIJ_SESSION_NAME when set
+zellij_action() {
+  if [ -n "$ZELLIJ_SESSION_NAME" ]; then
+    "$ZELLIJ_BIN" --session "$ZELLIJ_SESSION_NAME" action "$@"
+  else
+    "$ZELLIJ_BIN" action "$@"
+  fi
+}
+
+# Normalize a Zellij pane identifier (bare integer or terminal_<id>) to terminal_<id>
+zellij_normalize_pane_id() {
+  local pid="$1"
+  if [[ "$pid" =~ ^[0-9]+$ ]]; then
+    echo "terminal_${pid}"
+  else
+    echo "$pid"
+  fi
+}
+
 # Abstracted Multiplexer Operations
 
 mux_get_target_pane_id() {
   local context_json="${1:-$HERDR_PLUGIN_CONTEXT_JSON}"
   if [ "$CURRENT_BACKEND" = "tmux" ]; then
-    if [ -n "$PROMPTER_TARGET_PANE" ]; then
+    if [ -n "$PROMPTER_TARGET_PANE" ] && [[ "$PROMPTER_TARGET_PANE" != \#\{* ]]; then
       echo "$PROMPTER_TARGET_PANE"
-    elif [ -n "$PROMPTER_CALLER_PANE" ]; then
+    elif [ -n "$PROMPTER_CALLER_PANE" ] && [[ "$PROMPTER_CALLER_PANE" != \#\{* ]]; then
       echo "$PROMPTER_CALLER_PANE"
     elif [ -n "$TMUX_PANE" ]; then
       echo "$TMUX_PANE"
@@ -116,6 +139,46 @@ mux_get_target_pane_id() {
       local pid
       pid=$("$TMUX_BIN" display-message -p '#{pane_id}' 2>/dev/null)
       echo "${pid:-current}"
+    else
+      echo "current"
+    fi
+  elif [ "$CURRENT_BACKEND" = "zellij" ]; then
+    if [ -n "$PROMPTER_TARGET_PANE" ]; then
+      zellij_normalize_pane_id "$PROMPTER_TARGET_PANE"
+    elif [ -n "$PROMPTER_CALLER_PANE" ]; then
+      zellij_normalize_pane_id "$PROMPTER_CALLER_PANE"
+    elif command -v "$ZELLIJ_BIN" &>/dev/null && command -v jq &>/dev/null; then
+      local tabs_json panes_json self_num="" pid=""
+      [ -n "$ZELLIJ_PANE_ID" ] && self_num="${ZELLIJ_PANE_ID#terminal_}"
+      tabs_json=$(zellij_action list-tabs --all --json 2>/dev/null)
+      panes_json=$(zellij_action list-panes --all --json 2>/dev/null)
+      if [ -n "$tabs_json" ] && [ -n "$panes_json" ]; then
+        pid=$(printf '%s' "$panes_json" | jq -r --argjson tabs "$tabs_json" --arg self "$self_num" '
+          ([$tabs[] | select(.active == true) | .tab_id][0] // null) as $active_tab |
+          [
+            .[] |
+            select(.is_plugin == false) |
+            select($self == "" or (.id | tostring) != $self) |
+            select($active_tab == null or .tab_id == $active_tab)
+          ] as $candidates |
+          (
+            [$candidates[] | select(.is_focused == true and .is_floating == false)] +
+            [$candidates[] | select(.is_focused == true)] +
+            [$candidates[] | select(.is_floating == false)] +
+            $candidates
+          )[0].id // empty |
+          if . != null and . != "" then "terminal_\(.)" else empty end
+        ' 2>/dev/null)
+      fi
+      if [ -n "$pid" ]; then
+        echo "$pid"
+      elif [ -n "$ZELLIJ_PANE_ID" ]; then
+        zellij_normalize_pane_id "$ZELLIJ_PANE_ID"
+      else
+        echo "current"
+      fi
+    elif [ -n "$ZELLIJ_PANE_ID" ]; then
+      zellij_normalize_pane_id "$ZELLIJ_PANE_ID"
     else
       echo "current"
     fi
@@ -132,12 +195,30 @@ mux_get_workspace_cwd() {
   local context_json="${1:-$HERDR_PLUGIN_CONTEXT_JSON}"
   if [ "$CURRENT_BACKEND" = "tmux" ]; then
     if command -v "$TMUX_BIN" &>/dev/null; then
-      local cwd
-      cwd=$("$TMUX_BIN" display-message -p '#{pane_current_path}' 2>/dev/null)
+      local pid cwd target_opt=()
+      pid=$(mux_get_target_pane_id "$context_json")
+      if [ -n "$pid" ] && [ "$pid" != "current" ]; then
+        target_opt=(-t "$pid")
+      fi
+      cwd=$("$TMUX_BIN" display-message "${target_opt[@]}" -p '#{pane_current_path}' 2>/dev/null)
       echo "${cwd:-$PWD}"
     else
       echo "$PWD"
     fi
+  elif [ "$CURRENT_BACKEND" = "zellij" ]; then
+    local cwd=""
+    if command -v "$ZELLIJ_BIN" &>/dev/null && command -v jq &>/dev/null; then
+      local pid num_id panes_json
+      pid=$(mux_get_target_pane_id "$context_json")
+      num_id="${pid#terminal_}"
+      if [[ "$num_id" =~ ^[0-9]+$ ]]; then
+        panes_json=$(zellij_action list-panes --all --json 2>/dev/null)
+        if [ -n "$panes_json" ]; then
+          cwd=$(printf '%s' "$panes_json" | jq -r --argjson id "$num_id" '[.[] | select(.is_plugin == false and .id == $id) | .pane_cwd // empty][0] // empty' 2>/dev/null)
+        fi
+      fi
+    fi
+    echo "${cwd:-$PWD}"
   else
     local cwd=""
     if [ -n "$context_json" ]; then
@@ -160,9 +241,9 @@ mux_get_selected_text() {
       sel=$(get_clipboard_text)
     fi
   else
-    # For tmux, prioritize OS clipboard over show-buffer to prevent inserting stale buffer history
+    # For tmux/zellij, prioritize OS clipboard over show-buffer to prevent inserting stale buffer history
     sel=$(get_clipboard_text)
-    if [ -z "$sel" ] && command -v "$TMUX_BIN" &>/dev/null; then
+    if [ -z "$sel" ] && [ "$CURRENT_BACKEND" = "tmux" ] && command -v "$TMUX_BIN" &>/dev/null; then
       sel=$("$TMUX_BIN" show-buffer 2>/dev/null)
     fi
   fi
@@ -178,6 +259,12 @@ mux_read_pane_logs() {
       target_opt=(-t "$pane_id")
     fi
     "$TMUX_BIN" capture-pane "${target_opt[@]}" -p -S -"$lines" 2>/dev/null
+  elif [ "$CURRENT_BACKEND" = "zellij" ]; then
+    local pane_opt=()
+    if [ -n "$pane_id" ] && [ "$pane_id" != "current" ]; then
+      pane_opt=(--pane-id "$(zellij_normalize_pane_id "$pane_id")")
+    fi
+    zellij_action dump-screen "${pane_opt[@]}" --full 2>/dev/null | tail -n "$lines"
   else
     if [ "$pane_id" != "current" ]; then
       "$HERDR_BIN" pane read "$pane_id" --lines "$lines" 2>/dev/null
@@ -205,6 +292,21 @@ mux_list_panes() {
           print $0
         }
       ' | sed 's/^[[:space:]]*//'
+    fi
+  elif [ "$CURRENT_BACKEND" = "zellij" ]; then
+    if command -v "$ZELLIJ_BIN" &>/dev/null && command -v jq &>/dev/null; then
+      local panes_json
+      panes_json=$(zellij_action list-panes --all --json 2>/dev/null)
+      if [ -n "$panes_json" ]; then
+        local self_num=""
+        [ -n "$ZELLIJ_PANE_ID" ] && self_num="${ZELLIJ_PANE_ID#terminal_}"
+        printf '%s' "$panes_json" | jq -r --arg self "$self_num" '
+          [.[] | select(.is_plugin == false) | select($self == "" or (.id | tostring) != $self)]
+          | sort_by(.tab_position, .id)
+          | .[]
+          | "\(.tab_name // ("Tab " + (.tab_position | tostring))) | terminal_\(.id)\(if .title and .title != "" then " (\(.title))" else "" end)\(if .pane_cwd and .pane_cwd != "" then " (\(.pane_cwd))" else "" end)"
+        ' 2>/dev/null
+      fi
     fi
   else
     local panes_json
@@ -234,10 +336,33 @@ mux_send_text() {
     if [ -n "$target_pid" ] && [ "$target_pid" != "current" ]; then
       target_opt=(-t "$target_pid")
     fi
+    local same_tty=false
     if [ -n "$TMUX_PANE" ] && [ "$target_pid" = "$TMUX_PANE" ] && [ -t 1 ]; then
-      (sleep 0.05 && "$TMUX_BIN" send-keys "${target_opt[@]}" -l "$text") &>/dev/null &
+      local current_tty pane_tty
+      current_tty=$(tty 2>/dev/null || true)
+      pane_tty=$("$TMUX_BIN" display-message -p -t "$TMUX_PANE" '#{pane_tty}' 2>/dev/null || true)
+      if [ -z "$pane_tty" ] || [ -z "$current_tty" ] || [ "$current_tty" = "$pane_tty" ]; then
+        same_tty=true
+      fi
+    fi
+    if [ "$same_tty" = true ]; then
+      (trap '' HUP; sleep 0.05 && "$TMUX_BIN" send-keys "${target_opt[@]}" -l -- "$text") &>/dev/null &
     else
-      "$TMUX_BIN" send-keys "${target_opt[@]}" -l "$text" 2>/dev/null
+      "$TMUX_BIN" send-keys "${target_opt[@]}" -l -- "$text" 2>/dev/null
+    fi
+  elif [ "$CURRENT_BACKEND" = "zellij" ]; then
+    local pane_opt=()
+    local norm_pid=""
+    if [ -n "$target_pid" ] && [ "$target_pid" != "current" ]; then
+      norm_pid=$(zellij_normalize_pane_id "$target_pid")
+      pane_opt=(--pane-id "$norm_pid")
+    fi
+    local self_norm=""
+    [ -n "$ZELLIJ_PANE_ID" ] && self_norm=$(zellij_normalize_pane_id "$ZELLIJ_PANE_ID")
+    if [ -n "$self_norm" ] && [ "$norm_pid" = "$self_norm" ] && [ -t 1 ]; then
+      (trap '' HUP; sleep 0.05 && zellij_action paste "${pane_opt[@]}" -- "$text") &>/dev/null &
+    else
+      zellij_action paste "${pane_opt[@]}" -- "$text" 2>/dev/null
     fi
   else
     if [ "$target_pid" != "current" ]; then
@@ -254,8 +379,15 @@ mux_run_command() {
     if [ -n "$target_pid" ] && [ "$target_pid" != "current" ]; then
       target_opt=(-t "$target_pid")
     fi
-    "$TMUX_BIN" send-keys "${target_opt[@]}" -l "$text" 2>/dev/null
+    "$TMUX_BIN" send-keys "${target_opt[@]}" -l -- "$text" 2>/dev/null
     "$TMUX_BIN" send-keys "${target_opt[@]}" Enter 2>/dev/null
+  elif [ "$CURRENT_BACKEND" = "zellij" ]; then
+    local pane_opt=()
+    if [ -n "$target_pid" ] && [ "$target_pid" != "current" ]; then
+      pane_opt=(--pane-id "$(zellij_normalize_pane_id "$target_pid")")
+    fi
+    zellij_action paste "${pane_opt[@]}" -- "$text" 2>/dev/null
+    zellij_action send-keys "${pane_opt[@]}" "Enter" 2>/dev/null
   else
     if [ "$target_pid" != "current" ]; then
       "$HERDR_BIN" pane run "$target_pid" "$text" 2>/dev/null
@@ -834,7 +966,7 @@ resolve_placeholders() {
             if [[ "$line" =~ ^Pane[[:space:]]+([a-zA-Z0-9_-]+) ]]; then
               pid="${BASH_REMATCH[1]}"
             else
-              pid=$(echo "$line" | grep -oE "(%[0-9]+|surface:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+:p[a-zA-Z0-9_-]+)" | head -n 1)
+              pid=$(echo "$line" | grep -oE "(%[0-9]+|terminal_[0-9]+|surface:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+:p[a-zA-Z0-9_-]+)" | head -n 1)
             fi
             if [ -z "$pid" ]; then
               pid=$(echo "$line" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print $1}')
@@ -875,7 +1007,7 @@ resolve_placeholders() {
           if [[ "$selected_pane_line" =~ ^Pane[[:space:]]+([a-zA-Z0-9_-]+) ]]; then
             selected_pane_id="${BASH_REMATCH[1]}"
           else
-            selected_pane_id=$(echo "$selected_pane_line" | grep -oE "(%[0-9]+|surface:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+:p[a-zA-Z0-9_-]+)" | head -n 1)
+            selected_pane_id=$(echo "$selected_pane_line" | grep -oE "(%[0-9]+|terminal_[0-9]+|surface:[a-zA-Z0-9_-]+|[a-zA-Z0-9_-]+:p[a-zA-Z0-9_-]+)" | head -n 1)
           fi
           if [ -z "$selected_pane_id" ]; then
             selected_pane_id=$(echo "$selected_pane_line" | awk -F'|' '{print $2}' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | awk '{print $1}')
@@ -1142,6 +1274,7 @@ TARGET_PANES=("$TARGET_PANE_ID")
 # Export variables for child fzf reload processes
 export HERDR_BIN
 export TMUX_BIN
+export ZELLIJ_BIN
 export MUX_BACKEND
 export CURRENT_BACKEND
 export CONFIG_DIR

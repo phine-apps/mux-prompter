@@ -26,8 +26,12 @@ setup() {
   export MOCK_LOG_DIR
   export HERDR_BIN_PATH="herdr"
   export TMUX_BIN_PATH="tmux"
+  export ZELLIJ_BIN_PATH="zellij"
   export HERDR_PLUGIN_CONFIG_DIR="$MOCK_CONFIG_DIR"
   unset TMUX
+  unset ZELLIJ
+  unset ZELLIJ_SESSION_NAME
+  unset ZELLIJ_PANE_ID
 
   # Write initial templates to the mock config directory
   write_templates
@@ -1015,5 +1019,121 @@ EOF
   [ "$output" = 'Command: echo " "' ]
 }
 
+@test "Z-01: Auto-detects zellij backend when ZELLIJ env vars are set" {
+  export ZELLIJ="0"
+  export ZELLIJ_SESSION_NAME="test-session"
+  export ZELLIJ_PANE_ID="5"
 
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    echo \"BACKEND:\$CURRENT_BACKEND\"
+  "
+  [ "$status" -eq 0 ]
+  grep -q -- "BACKEND:zellij" <<< "$output"
+}
+
+@test "Z-02: Explicit MUX_BACKEND=zellij override and --session scoping in zellij_action" {
+  export MUX_BACKEND="zellij"
+  export ZELLIJ_SESSION_NAME="my-session"
+  export ZELLIJ_PANE_ID="terminal_5"
+
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    echo \"BACKEND:\$CURRENT_BACKEND\"
+    mux_send_text 'terminal_1' 'hello zellij'
+  "
+  [ "$status" -eq 0 ]
+  grep -q -- "BACKEND:zellij" <<< "$output"
+  grep -q -- "zellij --session my-session action paste --pane-id terminal_1 -- hello zellij" "$MOCK_LOG_DIR/zellij_calls.log"
+}
+
+@test "Z-03: mux_get_target_pane_id ignores plugin and floating prompter panes, picking active-tab focused pane" {
+  export ZELLIJ="0"
+  export ZELLIJ_SESSION_NAME="test-session"
+  export ZELLIJ_PANE_ID="5"
+  unset PROMPTER_TARGET_PANE PROMPTER_CALLER_PANE
+
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    mux_get_target_pane_id
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "terminal_0" ]
+}
+
+@test "Z-04: mux_get_workspace_cwd resolves pane_cwd from resolved target pane" {
+  export ZELLIJ="0"
+  export ZELLIJ_SESSION_NAME="test-session"
+  export ZELLIJ_PANE_ID="5"
+
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    mux_get_workspace_cwd
+  "
+  [ "$status" -eq 0 ]
+  [ "$output" = "/mock/zellij/workspace" ]
+}
+
+@test "Z-05: {{pane_logs}} captures active-tab target pane scrollback via zellij dump-screen --full" {
+  export ZELLIJ="0"
+  export ZELLIJ_SESSION_NAME="test-session"
+  export ZELLIJ_PANE_ID="5"
+
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Logs:
+{{pane_logs}}' 'false'
+    printf '%s\n' \"\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  grep -q -- "zellij tab1 log line 1" <<< "$output"
+  grep -q -- "zellij tab1 log line 2" <<< "$output"
+  grep -q -- "action dump-screen --pane-id terminal_0 --full" "$MOCK_LOG_DIR/zellij_calls.log"
+}
+
+@test "Z-06: {{pane:choose}} selects zellij terminal_<id> pane across tabs" {
+  export ZELLIJ="0"
+  export ZELLIJ_SESSION_NAME="test-session"
+  export ZELLIJ_PANE_ID="5"
+
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders 'Target logs: {{pane:choose}}' 'false'
+    echo \"RESOLVED:\$RESOLVED_PROMPT\"
+  "
+  [ "$status" -eq 0 ]
+  grep -q -- "Target logs: zellij tab2 log line 1" <<< "$output"
+  grep -q -- "zellij tab2 error log" <<< "$output"
+  grep -q -- "action dump-screen --pane-id terminal_1 --full" "$MOCK_LOG_DIR/zellij_calls.log"
+}
+
+@test "Z-07: {{panes:choose}} broadcasts across tabs and safely passes hyphen-prefixed text via paste --" {
+  export ZELLIJ="0"
+  export ZELLIJ_SESSION_NAME="test-session"
+  export ZELLIJ_PANE_ID="5"
+
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    resolve_placeholders '-m broadcast test {{panes:choose}}' 'false'
+    for pid in \"\${TARGET_PANES[@]}\"; do
+      mux_send_text \"\$pid\" \"\$RESOLVED_PROMPT\"
+    done
+  "
+  [ "$status" -eq 0 ]
+  grep -q -- "action paste --pane-id terminal_0 -- -m broadcast test" "$MOCK_LOG_DIR/zellij_calls.log"
+  grep -q -- "action paste --pane-id terminal_1 -- -m broadcast test" "$MOCK_LOG_DIR/zellij_calls.log"
+}
+
+@test "Z-08: mux_run_command uses paste -- followed by send-keys Enter" {
+  export MUX_BACKEND="zellij"
+  export ZELLIJ_SESSION_NAME="test-session"
+
+  run bash -c "
+    eval \"\$(sed '/^# Main selection and execution loop/,\$d' '$PROMPTER_SCRIPT')\"
+    mux_run_command '1' 'git status -s'
+  "
+  [ "$status" -eq 0 ]
+  grep -q -- "action paste --pane-id terminal_1 -- git status -s" "$MOCK_LOG_DIR/zellij_calls.log"
+  grep -q -- "action send-keys --pane-id terminal_1 Enter" "$MOCK_LOG_DIR/zellij_calls.log"
+}
 

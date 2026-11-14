@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Mock zellij binary for unit testing mux-prompter
+
+MOCK_LOG_DIR="${MOCK_LOG_DIR:-/tmp}"
+echo "zellij $*" >> "$MOCK_LOG_DIR/zellij_calls.log"
+
+# Strip optional --session <name> prefix
+if [ "$1" = "--session" ]; then
+  shift 2
+fi
+
+if [ "$1" != "action" ]; then
+  exit 0
+fi
+shift
+
+subcmd="$1"
+shift
+
+case "$subcmd" in
+  list-tabs)
+    cat <<'EOF'
+[
+  {"tab_id": 1, "position": 0, "name": "Tab #1", "active": true},
+  {"tab_id": 2, "position": 1, "name": "Build", "active": false}
+]
+EOF
+    ;;
+  list-panes)
+    cat <<'EOF'
+[
+  {
+    "id": 0,
+    "is_plugin": true,
+    "is_focused": false,
+    "is_floating": false,
+    "title": "tab-bar",
+    "tab_id": 1,
+    "tab_position": 0,
+    "tab_name": "Tab #1",
+    "pane_command": "",
+    "pane_cwd": "/mock/zellij/workspace"
+  },
+  {
+    "id": 0,
+    "is_plugin": false,
+    "is_focused": true,
+    "is_floating": false,
+    "title": "editor",
+    "tab_id": 1,
+    "tab_position": 0,
+    "tab_name": "Tab #1",
+    "pane_command": "bash",
+    "pane_cwd": "/mock/zellij/workspace"
+  },
+  {
+    "id": 1,
+    "is_plugin": false,
+    "is_focused": true,
+    "is_floating": false,
+    "title": "runner",
+    "tab_id": 2,
+    "tab_position": 1,
+    "tab_name": "Build",
+    "pane_command": "npm",
+    "pane_cwd": "/mock/zellij/other-tab"
+  },
+  {
+    "id": 5,
+    "is_plugin": false,
+    "is_focused": true,
+    "is_floating": true,
+    "title": "prompter",
+    "tab_id": 1,
+    "tab_position": 0,
+    "tab_name": "Tab #1",
+    "pane_command": "prompter.sh",
+    "pane_cwd": "/mock/zellij/workspace"
+  }
+]
+EOF
+    ;;
+  dump-screen)
+    pane_id=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -p|--pane-id)
+          pane_id="$2"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    case "$pane_id" in
+      terminal_1)
+        printf 'zellij tab2 log line 1\nzellij tab2 error log\n'
+        ;;
+      *)
+        printf 'zellij tab1 log line 1\nzellij tab1 log line 2\n'
+        ;;
+    esac
+    ;;
+  paste|send-keys)
+    exit 0
+    ;;
+  *)
+    exit 0
+    ;;
+esac
